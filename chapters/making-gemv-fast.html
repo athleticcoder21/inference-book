@@ -9,7 +9,7 @@
 <meta name="dcterms.date" content="2026-09-10">
 <meta name="description" content="A worklog on optimizing matrix-vector multiplication in CUDA by reasoning about arithmetic intensity, memory transactions, and warp-level access patterns.">
 
-<title>1&nbsp; Making GEMV Fast – How to make your models fast</title>
+<title>1&nbsp; GEMV – How to make your models fast</title>
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -155,7 +155,7 @@ window.Quarto = {
       <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
-        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html">Kernels</a></li><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Making GEMV Fast</span></a></li></ol></nav>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html">Kernels</a></li><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">GEMV</span></a></li></ol></nav>
         <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
         </a>
       <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
@@ -201,13 +201,19 @@ window.Quarto = {
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="../chapters/making-gemv-fast.html" class="sidebar-item-text sidebar-link active">
- <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Making GEMV Fast</span></span></a>
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">GEMV</span></span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="../chapters/optimizing-softmax.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Making Softmax Fast</span></span></a>
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../chapters/optimizing-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">LayerNorm</span></span></a>
   </div>
 </li>
       </ul>
@@ -238,9 +244,9 @@ window.Quarto = {
 <!-- main -->
 <main class="content" id="quarto-document-content">
 
-<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html">Kernels</a></li><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Making GEMV Fast</span></a></li></ol></nav>
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html">Kernels</a></li><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">GEMV</span></a></li></ol></nav>
 <div class="quarto-title">
-<h1 class="title"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Making GEMV Fast</span></h1>
+<h1 class="title"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">GEMV</span></h1>
 <p class="subtitle lead">From a naïve CUDA kernel to coalesced memory access</p>
 </div>
 
@@ -1086,8 +1092,8 @@ offset  1 -&gt;  2 groups become 1 group of 32</code></pre>
       </a>          
   </div>
   <div class="nav-page nav-page-next">
-      <a href="../chapters/optimizing-softmax.html" class="pagination-link" aria-label="Making Softmax Fast">
-        <span class="nav-page-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Making Softmax Fast</span></span> <i class="bi bi-arrow-right-short"></i>
+      <a href="../chapters/optimizing-softmax.html" class="pagination-link" aria-label="Softmax">
+        <span class="nav-page-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Softmax</span></span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>

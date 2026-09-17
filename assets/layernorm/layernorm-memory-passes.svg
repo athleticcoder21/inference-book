@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1040" role="img" aria-labelledby="title desc">
+  <title id="title">Global input reads in three LayerNorm kernels</title>
+  <desc id="desc">Three separate panels compare the naive LayerNorm kernel with three global input reads, the warp Welford kernel with two global input reads, and the shared-memory block kernel with one global input read followed by on-chip reuse.</desc>
+
+  <defs>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#e11d47"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .panel { fill: #ffffff; stroke: #d8dde6; stroke-width: 2; }
+      .title { fill: #202938; font: 700 31px Arial, Helvetica, sans-serif; }
+      .subtitle { fill: #5b6472; font: 21px Arial, Helvetica, sans-serif; }
+      .label { fill: #202938; font: 600 21px Arial, Helvetica, sans-serif; }
+      .small { fill: #5b6472; font: 18px Arial, Helvetica, sans-serif; }
+      .read { fill: #be123c; font: 700 17px Arial, Helvetica, sans-serif; letter-spacing: 0.5px; }
+      .badge { fill: #fff1f3; stroke: #e11d47; stroke-width: 2; }
+      .badge-text { fill: #be123c; font: 700 20px Arial, Helvetica, sans-serif; }
+      .memory { fill: #ffffff; stroke: #364152; stroke-width: 2.5; }
+      .compute { fill: #fff5f7; stroke: #e11d47; stroke-width: 2.5; }
+      .shared { fill: #eff6ff; stroke: #2563eb; stroke-width: 2.5; }
+      .on-chip { fill: #f8fbff; stroke: #93b4ed; stroke-width: 2; stroke-dasharray: 9 8; }
+      .arrow-red { fill: none; stroke: #e11d47; stroke-width: 3.5; marker-end: url(#arrow-red); }
+      .arrow-blue { fill: none; stroke: #2563eb; stroke-width: 3.5; marker-end: url(#arrow-blue); }
+    </style>
+  </defs>
+
+  <rect width="1400" height="1040" fill="#f5f7fa"/>
+
+  <!-- Naive kernel -->
+  <rect class="panel" x="40" y="35" width="1320" height="305" rx="18"/>
+  <text class="title" x="75" y="82">Naive kernel</text>
+  <text class="subtitle" x="75" y="112">Each stage returns to global memory for the input row.</text>
+  <rect class="badge" x="1168" y="58" width="150" height="46" rx="23"/>
+  <text class="badge-text" x="1243" y="88" text-anchor="middle">3 reads of X</text>
+
+  <rect class="memory" x="80" y="137" width="190" height="48" rx="9"/>
+  <text class="label" x="175" y="168" text-anchor="middle">global X</text>
+  <text class="read" x="300" y="153">READ 1</text>
+  <path class="arrow-red" d="M285 161 H365"/>
+  <rect class="compute" x="380" y="137" width="520" height="48" rx="9"/>
+  <text class="label" x="640" y="168" text-anchor="middle">calculate mean</text>
+
+  <rect class="memory" x="80" y="207" width="190" height="48" rx="9"/>
+  <text class="label" x="175" y="238" text-anchor="middle">global X</text>
+  <text class="read" x="300" y="223">READ 2</text>
+  <path class="arrow-red" d="M285 231 H365"/>
+  <rect class="compute" x="380" y="207" width="520" height="48" rx="9"/>
+  <text class="label" x="640" y="238" text-anchor="middle">calculate variance using the mean</text>
+
+  <rect class="memory" x="80" y="277" width="190" height="48" rx="9"/>
+  <text class="label" x="175" y="308" text-anchor="middle">global X</text>
+  <text class="read" x="300" y="293">READ 3</text>
+  <path class="arrow-red" d="M285 301 H365"/>
+  <rect class="compute" x="380" y="277" width="520" height="48" rx="9"/>
+  <text class="label" x="640" y="308" text-anchor="middle">normalize, scale, and shift</text>
+  <path class="arrow-red" d="M915 301 H1085"/>
+  <rect class="memory" x="1100" y="277" width="190" height="48" rx="9"/>
+  <text class="label" x="1195" y="308" text-anchor="middle">global Y</text>
+
+  <!-- Warp + Welford kernel -->
+  <rect class="panel" x="40" y="370" width="1320" height="265" rx="18"/>
+  <text class="title" x="75" y="417">Warp + Welford kernel</text>
+  <text class="subtitle" x="75" y="447">Mean and variance are accumulated together during the first pass.</text>
+  <rect class="badge" x="1168" y="393" width="150" height="46" rx="23"/>
+  <text class="badge-text" x="1243" y="423" text-anchor="middle">2 reads of X</text>
+
+  <rect class="memory" x="80" y="472" width="190" height="48" rx="9"/>
+  <text class="label" x="175" y="503" text-anchor="middle">global X</text>
+  <text class="read" x="300" y="488">READ 1</text>
+  <path class="arrow-red" d="M285 496 H365"/>
+  <rect class="compute" x="380" y="472" width="520" height="48" rx="9"/>
+  <text class="label" x="640" y="503" text-anchor="middle">update mean and M2 together</text>
+
+  <rect class="memory" x="80" y="552" width="190" height="48" rx="9"/>
+  <text class="label" x="175" y="583" text-anchor="middle">global X</text>
+  <text class="read" x="300" y="568">READ 2</text>
+  <path class="arrow-red" d="M285 576 H365"/>
+  <rect class="compute" x="380" y="552" width="520" height="48" rx="9"/>
+  <text class="label" x="640" y="583" text-anchor="middle">normalize, scale, and shift</text>
+  <path class="arrow-red" d="M915 576 H1085"/>
+  <rect class="memory" x="1100" y="552" width="190" height="48" rx="9"/>
+  <text class="label" x="1195" y="583" text-anchor="middle">global Y</text>
+
+  <!-- Shared-memory block kernel -->
+  <rect class="panel" x="40" y="665" width="1320" height="335" rx="18"/>
+  <text class="title" x="75" y="712">Shared-memory block kernel</text>
+  <text class="subtitle" x="75" y="742">The row enters the chip once and is reused for every stage.</text>
+  <rect class="badge" x="1168" y="688" width="150" height="46" rx="23"/>
+  <text class="badge-text" x="1243" y="718" text-anchor="middle">1 read of X</text>
+
+  <rect class="on-chip" x="320" y="770" width="770" height="182" rx="14"/>
+  <text class="small" x="345" y="800">ON CHIP</text>
+
+  <rect class="memory" x="80" y="824" width="190" height="56" rx="9"/>
+  <text class="label" x="175" y="859" text-anchor="middle">global X</text>
+  <text class="read" x="284" y="815">ONE GLOBAL READ</text>
+  <path class="arrow-red" d="M285 852 H385"/>
+
+  <rect class="shared" x="400" y="824" width="255" height="56" rx="9"/>
+  <text class="label" x="527" y="859" text-anchor="middle">shared row copy</text>
+  <path class="arrow-blue" d="M670 852 H745"/>
+
+  <rect class="compute" x="760" y="824" width="290" height="56" rx="9"/>
+  <text class="label" x="905" y="848" text-anchor="middle">mean → variance</text>
+  <text class="label" x="905" y="872" text-anchor="middle">→ normalize</text>
+
+  <path class="arrow-red" d="M1065 852 H1135"/>
+  <rect class="memory" x="1150" y="824" width="170" height="56" rx="9"/>
+  <text class="label" x="1235" y="859" text-anchor="middle">global Y</text>
+
+  <text class="small" x="527" y="915" text-anchor="middle">loaded once</text>
+  <text class="small" x="905" y="915" text-anchor="middle">all three stages reuse the same copy</text>
+</svg>

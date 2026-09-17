@@ -1,0 +1,1754 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.10.18">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="dcterms.date" content="2026-09-17">
+<meta name="description" content="A worklog on optimizing LayerNorm in CUDA by counting memory traffic, coalescing row access, combining statistics with Welford’s algorithm, and reusing data from shared memory.">
+
+<title>3&nbsp; LayerNorm – How to make your models fast</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../">
+<link href="../chapters/optimizing-softmax.html" rel="prev">
+<script src="../site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="../site_libs/quarto-html/popper.min.js"></script>
+<script src="../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../site_libs/quarto-html/quarto-syntax-highlighting-392eb0070ea7621f1172b9331af7fd2d.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../site_libs/bootstrap/bootstrap-4fc293a09fdbe0f1a179197bb2ff48e1.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script defer="" src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN" && texText && texText.data) {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+</head>
+
+<body class="nav-sidebar floating quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html">Kernels</a></li><li class="breadcrumb-item"><a href="../chapters/optimizing-layernorm.html"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">LayerNorm</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../">How to make your models fast</a> 
+        <div class="sidebar-tools-main">
+    <a href="https://github.com/athleticcoder21/inference-book" title="Source Code" class="quarto-navigation-tool px-1" aria-label="Source Code"><i class="bi bi-github"></i></a>
+</div>
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">How to make your models fast</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../chapters/making-gemv-fast.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">GEMV</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../chapters/optimizing-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../chapters/optimizing-layernorm.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">LayerNorm</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#one-thread-per-row" id="toc-one-thread-per-row" class="nav-link active" data-scroll-target="#one-thread-per-row"><span class="header-section-number">3.1</span> One thread per row</a>
+  <ul class="collapse">
+  <li><a href="#computation" id="toc-computation" class="nav-link" data-scroll-target="#computation"><span class="header-section-number">3.1.1</span> Computation</a></li>
+  <li><a href="#memory-access" id="toc-memory-access" class="nav-link" data-scroll-target="#memory-access"><span class="header-section-number">3.1.2</span> Memory access</a></li>
+  </ul></li>
+  <li><a href="#removing-one-pass-over-the-row" id="toc-removing-one-pass-over-the-row" class="nav-link" data-scroll-target="#removing-one-pass-over-the-row"><span class="header-section-number">3.2</span> Removing one pass over the row</a>
+  <ul class="collapse">
+  <li><a href="#why-not-use-the-sum-of-squares" id="toc-why-not-use-the-sum-of-squares" class="nav-link" data-scroll-target="#why-not-use-the-sum-of-squares"><span class="header-section-number">3.2.1</span> Why not use the sum of squares?</a></li>
+  <li><a href="#building-the-running-statistics" id="toc-building-the-running-statistics" class="nav-link" data-scroll-target="#building-the-running-statistics"><span class="header-section-number">3.2.2</span> Building the running statistics</a></li>
+  <li><a href="#cost-of-two-passes" id="toc-cost-of-two-passes" class="nav-link" data-scroll-target="#cost-of-two-passes"><span class="header-section-number">3.2.3</span> Cost of two passes</a></li>
+  </ul></li>
+  <li><a href="#one-warp-per-row" id="toc-one-warp-per-row" class="nav-link" data-scroll-target="#one-warp-per-row"><span class="header-section-number">3.3</span> One warp per row</a>
+  <ul class="collapse">
+  <li><a href="#splitting-a-row-across-the-warp" id="toc-splitting-a-row-across-the-warp" class="nav-link" data-scroll-target="#splitting-a-row-across-the-warp"><span class="header-section-number">3.3.1</span> Splitting a row across the warp</a></li>
+  <li><a href="#combining-two-welford-states" id="toc-combining-two-welford-states" class="nav-link" data-scroll-target="#combining-two-welford-states"><span class="header-section-number">3.3.2</span> Combining two Welford states</a></li>
+  <li><a href="#reducing-the-states-across-the-warp" id="toc-reducing-the-states-across-the-warp" class="nav-link" data-scroll-target="#reducing-the-states-across-the-warp"><span class="header-section-number">3.3.3</span> Reducing the states across the warp</a></li>
+  <li><a href="#why-we-still-read-the-input-twice" id="toc-why-we-still-read-the-input-twice" class="nav-link" data-scroll-target="#why-we-still-read-the-input-twice"><span class="header-section-number">3.3.4</span> Why we still read the input twice</a></li>
+  <li><a href="#cost-after-coalescing" id="toc-cost-after-coalescing" class="nav-link" data-scroll-target="#cost-after-coalescing"><span class="header-section-number">3.3.5</span> Cost after coalescing</a></li>
+  <li><a href="#turning-the-complete-algorithm-into-code" id="toc-turning-the-complete-algorithm-into-code" class="nav-link" data-scroll-target="#turning-the-complete-algorithm-into-code"><span class="header-section-number">3.3.6</span> Turning the complete algorithm into code</a></li>
+  </ul></li>
+  <li><a href="#reading-the-input-only-once" id="toc-reading-the-input-only-once" class="nav-link" data-scroll-target="#reading-the-input-only-once"><span class="header-section-number">3.4</span> Reading the input only once</a>
+  <ul class="collapse">
+  <li><a href="#loading-the-row-cooperatively" id="toc-loading-the-row-cooperatively" class="nav-link" data-scroll-target="#loading-the-row-cooperatively"><span class="header-section-number">3.4.1</span> Loading the row cooperatively</a></li>
+  <li><a href="#reducing-across-a-block" id="toc-reducing-across-a-block" class="nav-link" data-scroll-target="#reducing-across-a-block"><span class="header-section-number">3.4.2</span> Reducing across a block</a></li>
+  <li><a href="#reusing-the-cached-row" id="toc-reusing-the-cached-row" class="nav-link" data-scroll-target="#reusing-the-cached-row"><span class="header-section-number">3.4.3</span> Reusing the cached row</a></li>
+  </ul></li>
+  <li><a href="#cost-of-the-shared-memory-block-kernel" id="toc-cost-of-the-shared-memory-block-kernel" class="nav-link" data-scroll-target="#cost-of-the-shared-memory-block-kernel"><span class="header-section-number">3.5</span> Cost of the shared-memory block kernel</a>
+  <ul class="collapse">
+  <li><a href="#memory-access-2" id="toc-memory-access-2" class="nav-link" data-scroll-target="#memory-access-2"><span class="header-section-number">3.5.1</span> Memory access</a></li>
+  <li><a href="#the-price-of-keeping-the-row" id="toc-the-price-of-keeping-the-row" class="nav-link" data-scroll-target="#the-price-of-keeping-the-row"><span class="header-section-number">3.5.2</span> The price of keeping the row</a></li>
+  </ul></li>
+  <li><a href="#comparing-the-versions" id="toc-comparing-the-versions" class="nav-link" data-scroll-target="#comparing-the-versions"><span class="header-section-number">3.6</span> Comparing the versions</a></li>
+  <li><a href="#main-takeaways" id="toc-main-takeaways" class="nav-link" data-scroll-target="#main-takeaways"><span class="header-section-number">3.7</span> Main takeaways</a></li>
+  </ul>
+<div class="toc-actions"><ul><li><a href="https://github.com/athleticcoder21/inference-book/edit/main/chapters/optimizing-layernorm.qmd" class="toc-action"><i class="bi bi-github"></i>Edit this page</a></li><li><a href="https://github.com/athleticcoder21/inference-book/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../chapters/making-gemv-fast.html">Kernels</a></li><li class="breadcrumb-item"><a href="../chapters/optimizing-layernorm.html"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">LayerNorm</span></a></li></ol></nav>
+<div class="quarto-title">
+<h1 class="title"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">LayerNorm</span></h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+    <div>
+    <div class="quarto-title-meta-heading">Published</div>
+    <div class="quarto-title-meta-contents">
+      <p class="date">September 17, 2026</p>
+    </div>
+  </div>
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>The code for this chapter lives in <a href="https://github.com/athleticcoder21/inference-book/tree/main/kernels/layernorm"><code>kernels/layernorm/</code></a>.</p>
+<p>During a transformer’s forward pass, activation magnitudes can grow or shrink as they pass through many attention and feed-forward layers. If their scale drifts too far, training becomes unstable and gradients can explode or vanish.</p>
+<p><strong>Layer normalization</strong>, or <strong>LayerNorm</strong>, controls this by normalizing the features of each token before passing them farther through the transformer.</p>
+<p>This is different from <strong>BatchNorm</strong>. BatchNorm calculates its statistics for one feature across different examples in a batch. LayerNorm calculates its statistics across all the features of one token. Therefore, LayerNorm handles each token independently and does not depend on the batch size.</p>
+<p>Assume that our input is a matrix <span class="math inline">\(\mathbf{X}\in\mathbb{R}^{M\times N}\)</span>. Each row is the hidden state of one token, and its <span class="math inline">\(N\)</span> columns are the features of that hidden state. For row <span class="math inline">\(r\)</span>, the mean is</p>
+<p><span class="math display">\[
+\mu_r=\frac{1}{N}\sum_{j=0}^{N-1}X_{r,j},
+\]</span></p>
+<p>and the variance is</p>
+<p><span class="math display">\[
+\sigma_r^2
+  =\frac{1}{N}\sum_{j=0}^{N-1}(X_{r,j}-\mu_r)^2.
+\]</span></p>
+<p>We first standardize each element using these statistics. Then we apply a learned scale <span class="math inline">\(\gamma_j\)</span> and shift <span class="math inline">\(\beta_j\)</span>:</p>
+<p><span class="math display">\[
+Y_{r,j}
+  =\gamma_j
+    \frac{X_{r,j}-\mu_r}{\sqrt{\sigma_r^2+\epsilon}}
+    +\beta_j.
+\]</span></p>
+<p>The small value <span class="math inline">\(\epsilon\)</span> prevents a division by zero when every element in a row is equal. The vectors <span class="math inline">\(\boldsymbol{\gamma}\)</span> and <span class="math inline">\(\boldsymbol{\beta}\)</span> each contain <span class="math inline">\(N\)</span> values. They are shared by every row, while every row gets its own <span class="math inline">\(\mu_r\)</span> and <span class="math inline">\(\sigma_r^2\)</span>.</p>
+<p>Before thinking about CUDA, let us write down the complete calculation:</p>
+<pre class="text"><code>for each row in X:
+    sum = 0
+
+    for each value in row:
+        sum += value
+
+    mean = sum / N
+    squared_difference = 0
+
+    for each value in row:
+        difference = value - mean
+        squared_difference += difference * difference
+
+    variance = squared_difference / N
+    reciprocal_std = 1 / sqrt(variance + epsilon)
+
+    for column = 0 to N - 1:
+        normalized = (row[column] - mean) * reciprocal_std
+        output[column] = normalized * gamma[column] + beta[column]</code></pre>
+<p><img src="../assets/layernorm/layernorm-overview.svg" class="img-fluid" style="width:100.0%" alt="One row of features is summarized by a mean and variance, standardized, and then transformed by the learned gamma and beta vectors."></p>
+<p>So LayerNorm first calculates the row mean, uses that mean to calculate the variance, and finally normalizes each feature before applying the learned scale and shift. Let us now map these three steps to the simplest CUDA kernel.</p>
+<section id="one-thread-per-row" class="level2" data-number="3.1">
+<h2 data-number="3.1" class="anchored" data-anchor-id="one-thread-per-row"><span class="header-section-number">3.1</span> One thread per row</h2>
+<p>Let us start with the most direct CUDA mapping. We give one row to one thread:</p>
+<pre class="text"><code>thread 0 -&gt; row 0
+thread 1 -&gt; row 1
+thread 2 -&gt; row 2
+...</code></pre>
+<p>This is a direct mapping of the pseudocode we just wrote. Every thread performs the three loops for its assigned row, while different rows are processed in parallel.</p>
+<p>Different rows run in parallel, but everything inside one row is still serial. Before changing the mapping, let us count what this kernel does.</p>
+<section id="computation" class="level3" data-number="3.1.1">
+<h3 data-number="3.1.1" class="anchored" data-anchor-id="computation"><span class="header-section-number">3.1.1</span> Computation</h3>
+<p>For one row, the mean pass performs <span class="math inline">\(N-1\)</span> additions and one division:</p>
+<p><span class="math display">\[
+(N-1)+1=N \quad \text{FLOPs}.
+\]</span></p>
+<p>The variance pass performs <span class="math inline">\(N\)</span> subtractions, <span class="math inline">\(N\)</span> multiplications, <span class="math inline">\(N-1\)</span> additions, and one division:</p>
+<p><span class="math display">\[
+N+N+(N-1)+1=3N \quad \text{FLOPs}.
+\]</span></p>
+<p>The final pass performs one subtraction, two multiplications, and one addition per element:</p>
+<p><span class="math display">\[
+4N \quad \text{FLOPs}.
+\]</span></p>
+<p>Adding <span class="math inline">\(\epsilon\)</span> before <code>rsqrtf</code> contributes one more addition per row. The ordinary floating-point work is therefore</p>
+<p><span class="math display">\[
+N+3N+4N+1=8N+1 \quad \text{FLOPs per row},
+\]</span></p>
+<p>or</p>
+<p><span class="math display">\[
+M(8N+1)=8MN+M \quad \text{FLOPs for the matrix}.
+\]</span></p>
+<p>We also evaluate <code>rsqrtf</code> once per row. Like the exponential in our Softmax worklog, reciprocal square root is a special function rather than one ordinary FLOP, so we track it separately instead of pretending it has a universal cost.</p>
+</section>
+<section id="memory-access" class="level3" data-number="3.1.2">
+<h3 data-number="3.1.2" class="anchored" data-anchor-id="memory-access"><span class="header-section-number">3.1.2</span> Memory access</h3>
+<p>Assume FP32, so every element occupies 4 bytes. The naive algorithm reads <span class="math inline">\(\mathbf{X}\)</span> three times. During the final pass, it also reads one value from <span class="math inline">\(\boldsymbol{\gamma}\)</span> and one from <span class="math inline">\(\boldsymbol{\beta}\)</span> for every output element, then writes that output.</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Operation</th>
+<th style="text-align: right;">Elements transferred</th>
+<th style="text-align: right;">Bytes transferred</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Read <span class="math inline">\(\mathbf{X}\)</span> for the mean</td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Read <span class="math inline">\(\mathbf{X}\)</span> for the variance</td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Read <span class="math inline">\(\mathbf{X}\)</span> for normalization</td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Read <span class="math inline">\(\boldsymbol{\gamma}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Read <span class="math inline">\(\boldsymbol{\beta}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Write <span class="math inline">\(\mathbf{Y}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td><strong>Total</strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(6MN\)</span></strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(24MN\)</span></strong></td>
+</tr>
+</tbody>
+</table>
+<p>Using the ordinary floating-point operations we counted above, the arithmetic intensity is</p>
+<p><span class="math display">\[
+\begin{aligned}
+AI_{\text{naive}}(M,N)
+  &amp;=\frac{8MN+M}{24MN} \\
+  &amp;=\frac{8N+1}{24N}
+    \quad \text{FLOPs/byte}.
+\end{aligned}
+\]</span></p>
+<p>For a large <span class="math inline">\(N\)</span>,</p>
+<p><span class="math display">\[
+AI_{\text{naive}}(M,N)
+  \approx\frac{8MN}{24MN}
+  =\frac{1}{3}
+  \approx0.333\ \text{FLOPs/byte}.
+\]</span></p>
+<p>So LayerNorm performs roughly <strong>one ordinary floating-point operation for every 3 bytes transferred</strong>. This is a low arithmetic intensity, which means memory traffic is going to matter a lot.</p>
+<div class="callout callout-style-default callout-note callout-titled" title="What about the cache?">
+<div class="callout-header d-flex align-content-center collapsed" data-bs-toggle="collapse" data-bs-target=".callout-1-contents" aria-controls="callout-1" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Note</span>What about the cache?
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-1" class="callout-1-contents callout-collapse collapse">
+<div class="callout-body-container callout-body">
+<p>Every row uses the same <span class="math inline">\(\gamma\)</span> and <span class="math inline">\(\beta\)</span> vectors, so the GPU may serve many of those reads from cache instead of going back to DRAM every time. We still count the reads performed by the kernel here. This gives us one consistent model for comparing our own implementations without assuming a particular cache hit rate.</p>
+</div>
+</div>
+</div>
+<p>There are two problems hiding inside this simple implementation:</p>
+<ul>
+<li><p><strong>We read the input row three times.</strong> The mean pass, variance pass, and normalization pass each fetch every element of <span class="math inline">\(\mathbf{X}\)</span>.</p></li>
+<li><p><strong>One thread owns one complete row.</strong> The work inside that row is serial, and neighboring threads in a warp read from different rows instead of adjacent columns.</p></li>
+</ul>
+<p>Let us handle these problems one at a time. We will first remove one input pass without changing which thread owns the row. After that, we will change the thread mapping and make the memory access coalesced.</p>
+</section>
+</section>
+<section id="removing-one-pass-over-the-row" class="level2" data-number="3.2">
+<h2 data-number="3.2" class="anchored" data-anchor-id="removing-one-pass-over-the-row"><span class="header-section-number">3.2</span> Removing one pass over the row</h2>
+<p>The separate mean and variance loops are the first target. We cannot calculate <span class="math inline">\((x_i-\mu)^2\)</span> until we know <span class="math inline">\(\mu\)</span>, which makes the second pass look unavoidable. But there are ways to update the mean and variance while the row is being read.</p>
+<section id="why-not-use-the-sum-of-squares" class="level3" data-number="3.2.1">
+<h3 data-number="3.2.1" class="anchored" data-anchor-id="why-not-use-the-sum-of-squares"><span class="header-section-number">3.2.1</span> Why not use the sum of squares?</h3>
+<p>Expanding the variance equation gives us</p>
+<p><span class="math display">\[
+\sigma^2=E[x^2]-E[x]^2.
+\]</span></p>
+<p>This means we could accumulate <span class="math inline">\(\sum x\)</span> and <span class="math inline">\(\sum x^2\)</span> together, then calculate</p>
+<p><span class="math display">\[
+\sigma^2
+  =\frac{\sum x^2}{N}
+   -\left(\frac{\sum x}{N}\right)^2.
+\]</span></p>
+<p>That would combine the mean and variance loops. The problem is floating-point precision. If the values are large but their variance is small, <span class="math inline">\(E[x^2]\)</span> and <span class="math inline">\(E[x]^2\)</span> are two large numbers that are almost equal. Subtracting them can discard the small difference we wanted to measure, and rounding can even make the result slightly negative.</p>
+<p>The equations are equal over real numbers, but they do not always behave the same way in FP32. We need a way to update the mean and variance as each value arrives without subtracting two large, nearly equal numbers. Let us build that update one step at a time.</p>
+</section>
+<section id="building-the-running-statistics" class="level3" data-number="3.2.2">
+<h3 data-number="3.2.2" class="anchored" data-anchor-id="building-the-running-statistics"><span class="header-section-number">3.2.2</span> Building the running statistics</h3>
+<p>Suppose we have processed <span class="math inline">\(n\)</span> values and their mean is <span class="math inline">\(\mu_n\)</span>. Their sum is therefore <span class="math inline">\(n\mu_n\)</span>. If the next value is <span class="math inline">\(x\)</span>, the new mean is</p>
+<p><span class="math display">\[
+\begin{aligned}
+\mu_{n+1}
+  &amp;=\frac{n\mu_n+x}{n+1}\\
+  &amp;=\mu_n+\frac{x-\mu_n}{n+1}.
+\end{aligned}
+\]</span></p>
+<p>The second form is useful in a kernel. We do not need to keep the sum of all the previous values. We only move the old mean towards <span class="math inline">\(x\)</span> by the appropriate amount.</p>
+<p>Now we need to update the variance. Instead of storing the variance directly, we store the sum of the squared differences from the current mean:</p>
+<p><span class="math display">\[
+M_{2,n}=\sum_{i=1}^{n}(x_i-\mu_n)^2.
+\]</span></p>
+<p><code>M2</code> is simply the conventional name for this accumulator. It is not the variance. After all <span class="math inline">\(N\)</span> values have been processed, the population variance is</p>
+<p><span class="math display">\[
+\sigma^2=\frac{M_{2,N}}{N}.
+\]</span></p>
+<p>When <span class="math inline">\(x\)</span> arrives, the mean changes from <span class="math inline">\(\mu_n\)</span> to <span class="math inline">\(\mu_{n+1}\)</span>. That means the old values are now measured from a slightly different mean. The new sum of squared differences is</p>
+<p><span class="math display">\[
+M_{2,n+1}
+  =\sum_{i=1}^{n}(x_i-\mu_{n+1})^2
+   +(x-\mu_{n+1})^2.
+\]</span></p>
+<p>Let</p>
+<p><span class="math display">\[
+\delta=x-\mu_n
+\]</span></p>
+<p>be the distance from the new value to the old mean. From the running-mean equation,</p>
+<p><span class="math display">\[
+\mu_{n+1}=\mu_n+\frac{\delta}{n+1}.
+\]</span></p>
+<p>To expand the previous <span class="math inline">\(n\)</span> terms, first define the amount by which the mean moves:</p>
+<p><span class="math display">\[
+\Delta\mu
+  =\mu_{n+1}-\mu_n
+  =\frac{\delta}{n+1}.
+\]</span></p>
+<p>For every value we have already processed,</p>
+<p><span class="math display">\[
+x_i-\mu_{n+1}
+  =(x_i-\mu_n)-\Delta\mu.
+\]</span></p>
+<p>Substituting this into the sum for the previous <span class="math inline">\(n\)</span> values gives</p>
+<p><span class="math display">\[
+\begin{aligned}
+\sum_{i=1}^{n}(x_i-\mu_{n+1})^2
+  &amp;=\sum_{i=1}^{n}\left((x_i-\mu_n)-\Delta\mu\right)^2\\
+  &amp;=\sum_{i=1}^{n}(x_i-\mu_n)^2
+    -2\Delta\mu\sum_{i=1}^{n}(x_i-\mu_n)
+    +\sum_{i=1}^{n}(\Delta\mu)^2.
+\end{aligned}
+\]</span></p>
+<p>The first term is <span class="math inline">\(M_{2,n}\)</span>. The middle term is zero because the differences from a mean always sum to zero:</p>
+<p><span class="math display">\[
+\sum_{i=1}^{n}(x_i-\mu_n)
+  =\sum_{i=1}^{n}x_i-n\mu_n
+  =n\mu_n-n\mu_n
+  =0.
+\]</span></p>
+<p>The last term adds the same <span class="math inline">\((\Delta\mu)^2\)</span> once for each of the <span class="math inline">\(n\)</span> previous values. Therefore,</p>
+<p><span class="math display">\[
+\sum_{i=1}^{n}(x_i-\mu_{n+1})^2
+  =M_{2,n}+n(\Delta\mu)^2.
+\]</span></p>
+<p>We must also include the squared difference of the new value <span class="math inline">\(x\)</span>. Its distance from the new mean is</p>
+<p><span class="math display">\[
+\begin{aligned}
+x-\mu_{n+1}
+  &amp;=(x-\mu_n)-(\mu_{n+1}-\mu_n)\\
+  &amp;=\delta-\frac{\delta}{n+1}\\
+  &amp;=\frac{n\delta}{n+1}.
+\end{aligned}
+\]</span></p>
+<p>Putting the previous values and the new value together,</p>
+<p><span class="math display">\[
+\begin{aligned}
+M_{2,n+1}
+  &amp;=M_{2,n}
+    +n\left(\frac{\delta}{n+1}\right)^2
+    +\left(\frac{n\delta}{n+1}\right)^2\\
+  &amp;=M_{2,n}
+    +\frac{n\delta^2+n^2\delta^2}{(n+1)^2}\\
+  &amp;=M_{2,n}
+    +\frac{n\delta^2}{n+1}.
+\end{aligned}
+\]</span></p>
+<p>If we call the distance from <span class="math inline">\(x\)</span> to the new mean <span class="math inline">\(\delta'\)</span>, then</p>
+<p><span class="math display">\[
+\delta'=x-\mu_{n+1}=\frac{n\delta}{n+1}.
+\]</span></p>
+<p>Therefore,</p>
+<p><span class="math display">\[
+M_{2,n+1}=M_{2,n}+\delta\delta'.
+\]</span></p>
+<p>So for every new value, we only need its distance from the mean before the update and its distance from the mean after the update:</p>
+<p><span class="math display">\[
+\begin{aligned}
+n'      &amp;=n+1,\\
+\delta  &amp;=x-\mu,\\
+\mu'    &amp;=\mu+\frac{\delta}{n'},\\
+\delta' &amp;=x-\mu',\\
+M_2'    &amp;=M_2+\delta\delta'.
+\end{aligned}
+\]</span></p>
+<p>This running update is <strong>Welford’s algorithm</strong>.</p>
+<p>For example, consider the row <span class="math inline">\([1,5]\)</span>. We begin with <span class="math inline">\((n=0,\mu=0,M_2=0)\)</span>. After reading <span class="math inline">\(1\)</span>, the mean is <span class="math inline">\(1\)</span> and <span class="math inline">\(M_2\)</span> remains <span class="math inline">\(0\)</span>. When we read <span class="math inline">\(5\)</span>,</p>
+<p><span class="math display">\[
+\begin{aligned}
+\delta  &amp;=5-1=4,\\
+\mu'    &amp;=1+\frac{4}{2}=3,\\
+\delta' &amp;=5-3=2,\\
+M_2'    &amp;=0+(4)(2)=8.
+\end{aligned}
+\]</span></p>
+<p>The variance is therefore <span class="math inline">\(8/2=4\)</span>. Calculating it directly gives the same result:</p>
+<p><span class="math display">\[
+\frac{(1-3)^2+(5-3)^2}{2}=4.
+\]</span></p>
+<p>The update becomes a small helper:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> WelfordState <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> mean<span class="op">;</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> m2<span class="op">;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> count<span class="op">;</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="op">};</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>__device__ __forceinline__ WelfordState welford_update<span class="op">(</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    WelfordState state<span class="op">,</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> value</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    state<span class="op">.</span>count <span class="op">+=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> difference <span class="op">=</span> value <span class="op">-</span> state<span class="op">.</span>mean<span class="op">;</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    state<span class="op">.</span>mean <span class="op">+=</span> difference <span class="op">/</span> <span class="kw">static_cast</span><span class="op">&lt;</span><span class="dt">float</span><span class="op">&gt;(</span>state<span class="op">.</span>count<span class="op">);</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> difference_from_new_mean <span class="op">=</span> value <span class="op">-</span> state<span class="op">.</span>mean<span class="op">;</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    state<span class="op">.</span>m2 <span class="op">+=</span> difference <span class="op">*</span> difference_from_new_mean<span class="op">;</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> state<span class="op">;</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>With this helper, one thread can calculate both statistics during the same walk over the row:</p>
+<pre class="text"><code>parallel for row = 0 to M - 1:
+    state = (count=0, mean=0, M2=0)
+
+    for column = 0 to N - 1:
+        state = welford_update(state, X[row, column])
+
+    variance = state.M2 / state.count
+    reciprocal_std = 1 / sqrt(variance + epsilon)
+
+    for column = 0 to N - 1:
+        normalized =
+            (X[row, column] - state.mean) * reciprocal_std
+        Y[row, column] =
+            normalized * gamma[column] + beta[column]</code></pre>
+<p>We still need the final normalization loop because the complete mean and variance are known only after the first loop finishes. But the separate mean and variance passes have become one. The three-pass algorithm is now a two-pass algorithm.</p>
+</section>
+<section id="cost-of-two-passes" class="level3" data-number="3.2.3">
+<h3 data-number="3.2.3" class="anchored" data-anchor-id="cost-of-two-passes"><span class="header-section-number">3.2.3</span> Cost of two passes</h3>
+<p>Let us calculate what we gained and what we paid for it.</p>
+<section id="computation-1" class="level4" data-number="3.2.3.1">
+<h4 data-number="3.2.3.1" class="anchored" data-anchor-id="computation-1"><span class="header-section-number">3.2.3.1</span> Computation</h4>
+<p>One Welford update performs two subtractions, one division, one multiplication, and two additions. That is approximately six ordinary FLOPs per element. The final normalization and affine transform perform another four FLOPs per element.</p>
+<p>Ignoring the small per-row overhead for the final variance and reciprocal square root, the two-pass version performs approximately</p>
+<p><span class="math display">\[
+10MN \quad \text{FLOPs}.
+\]</span></p>
+<p>The naive kernel performed roughly <span class="math inline">\(8MN\)</span> FLOPs. We are doing more arithmetic, not less. The reason for using Welford is that it removes one complete input read while keeping the variance calculation numerically stable.</p>
+</section>
+<section id="memory-access-1" class="level4" data-number="3.2.3.2">
+<h4 data-number="3.2.3.2" class="anchored" data-anchor-id="memory-access-1"><span class="header-section-number">3.2.3.2</span> Memory access</h4>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Operation</th>
+<th style="text-align: right;">Elements transferred</th>
+<th style="text-align: right;">Bytes transferred</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Read <span class="math inline">\(\mathbf{X}\)</span> to update the statistics</td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Read <span class="math inline">\(\mathbf{X}\)</span> to calculate the output</td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Read <span class="math inline">\(\boldsymbol{\gamma}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Read <span class="math inline">\(\boldsymbol{\beta}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Write <span class="math inline">\(\mathbf{Y}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td><strong>Total</strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(5MN\)</span></strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(20MN\)</span></strong></td>
+</tr>
+</tbody>
+</table>
+<p>The input is now read twice instead of three times, so total useful traffic falls from <span class="math inline">\(24MN\)</span> to <span class="math inline">\(20MN\)</span> bytes. The approximate arithmetic intensity becomes</p>
+<p><span class="math display">\[
+AI_{\text{Welford}}
+  \approx\frac{10MN}{20MN}
+  =0.5\ \text{FLOPs/byte}.
+\]</span></p>
+<p>This increase does not mean that every operation became cheaper. Welford adds arithmetic. What changed in our favour is that one <span class="math inline">\(4MN\)</span>-byte read of the input has disappeared.</p>
+<p>There is still one major problem. A single thread owns the complete row, so the work inside that row remains serial and the warp still reads memory with a large stride.</p>
+</section>
+</section>
+</section>
+<section id="one-warp-per-row" class="level2" data-number="3.3">
+<h2 data-number="3.3" class="anchored" data-anchor-id="one-warp-per-row"><span class="header-section-number">3.3</span> One warp per row</h2>
+<section id="splitting-a-row-across-the-warp" class="level3" data-number="3.3.1">
+<h3 data-number="3.3.1" class="anchored" data-anchor-id="splitting-a-row-across-the-warp"><span class="header-section-number">3.3.1</span> Splitting a row across the warp</h3>
+<p>At a fixed loop iteration, neighboring threads in the current kernel own neighboring rows. If they are all reading <code>column = 0</code>, the addresses are</p>
+<pre class="text"><code>thread 0 -&gt; input[0]
+thread 1 -&gt; input[N]
+thread 2 -&gt; input[2N]
+...
+thread 31 -&gt; input[31N]</code></pre>
+<p>The threads are next to each other, but their values are <span class="math inline">\(N\)</span> elements apart in memory. We saw the same pattern in the GEMV and Softmax worklogs.</p>
+<p>Let us change who owns the work. Instead of assigning one row to one thread, we assign one row to one warp:</p>
+<pre class="text"><code>block 0: one warp -&gt; row 0
+block 1: one warp -&gt; row 1
+block 2: one warp -&gt; row 2
+...</code></pre>
+<p>Inside the warp, lane <span class="math inline">\(l\)</span> handles columns</p>
+<p><span class="math display">\[
+l,\ l+32,\ l+64,\ldots
+\]</span></p>
+<p>So during the first iteration, lanes 0 through 31 read columns 0 through 31. During the second iteration, they read columns 32 through 63. Neighboring lanes now read neighboring values on every iteration.</p>
+<p><img src="../assets/layernorm/layernorm-warp-row.svg" class="img-fluid" style="width:100.0%" alt="A four-lane teaching example in which neighboring lanes read neighboring LayerNorm columns and each lane builds a local Welford state before the states are merged."></p>
+<p>This gives us the coalesced access pattern we wanted. It also means that no single lane sees the complete row. Every lane produces a Welford state for only its own columns, and those local states must be combined.</p>
+<p>Let us use four lanes and the row</p>
+<p><span class="math display">\[
+\mathbf{x}=[1,2,3,4,5,6,7,8].
+\]</span></p>
+<p>The work is divided as</p>
+<pre class="text"><code>lane 0 -&gt; [1, 5] -&gt; (count=2, mean=3, M2=8)
+lane 1 -&gt; [2, 6] -&gt; (count=2, mean=4, M2=8)
+lane 2 -&gt; [3, 7] -&gt; (count=2, mean=5, M2=8)
+lane 3 -&gt; [4, 8] -&gt; (count=2, mean=6, M2=8)</code></pre>
+<p>For lane 0, the mean of <span class="math inline">\([1,5]\)</span> is 3. The squared differences are <span class="math inline">\((1-3)^2+(5-3)^2=8\)</span>, which gives us its <code>M2</code>. The other lanes calculate their local states in the same way.</p>
+</section>
+<section id="combining-two-welford-states" class="level3" data-number="3.3.2">
+<h3 data-number="3.3.2" class="anchored" data-anchor-id="combining-two-welford-states"><span class="header-section-number">3.3.2</span> Combining two Welford states</h3>
+<p>Suppose we have two groups</p>
+<p><span class="math display">\[
+A=(n_A,\mu_A,M_{2,A}),
+\qquad
+B=(n_B,\mu_B,M_{2,B}).
+\]</span></p>
+<p>The combined count is</p>
+<p><span class="math display">\[
+n=n_A+n_B.
+\]</span></p>
+<p>Let the distance between the group means be</p>
+<p><span class="math display">\[
+\delta=\mu_B-\mu_A.
+\]</span></p>
+<p>The combined mean is the weighted mean</p>
+<p><span class="math display">\[
+\mu=\mu_A+\delta\frac{n_B}{n}.
+\]</span></p>
+<p>We cannot simply add <span class="math inline">\(M_{2,A}\)</span> and <span class="math inline">\(M_{2,B}\)</span> because each group measured its values relative to a different mean. Once the groups are joined, we correct for the distance between those means:</p>
+<p><span class="math display">\[
+M_2
+  =M_{2,A}+M_{2,B}
+   +\delta^2\frac{n_A n_B}{n}.
+\]</span></p>
+<div class="callout callout-style-default callout-note callout-titled" title="Where does the correction term come from?">
+<div class="callout-header d-flex align-content-center collapsed" data-bs-toggle="collapse" data-bs-target=".callout-2-contents" aria-controls="callout-2" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Note</span>Where does the correction term come from?
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-2" class="callout-2-contents callout-collapse collapse">
+<div class="callout-body-container callout-body">
+<p>Before the merge, group <span class="math inline">\(A\)</span> measures every value from <span class="math inline">\(\mu_A\)</span>:</p>
+<p><span class="math display">\[
+M_{2,A}=\sum_{i\in A}(x_i-\mu_A)^2.
+\]</span></p>
+<p>After the merge, those same values must be measured from the combined mean <span class="math inline">\(\mu\)</span>. For a value in group <span class="math inline">\(A\)</span>,</p>
+<p><span class="math display">\[
+x_i-\mu=(x_i-\mu_A)+(\mu_A-\mu).
+\]</span></p>
+<p>Squaring and summing this expression across group <span class="math inline">\(A\)</span> gives</p>
+<p><span class="math display">\[
+\begin{aligned}
+\sum_{i\in A}(x_i-\mu)^2
+  &amp;=\sum_{i\in A}
+    \left((x_i-\mu_A)+(\mu_A-\mu)\right)^2\\
+  &amp;=M_{2,A}
+    +2(\mu_A-\mu)\sum_{i\in A}(x_i-\mu_A)
+    +n_A(\mu_A-\mu)^2.
+\end{aligned}
+\]</span></p>
+<p>The middle term is zero because the differences from <span class="math inline">\(\mu_A\)</span> sum to zero. Therefore, group <span class="math inline">\(A\)</span> contributes</p>
+<p><span class="math display">\[
+M_{2,A}+n_A(\mu_A-\mu)^2.
+\]</span></p>
+<p>The same argument for group <span class="math inline">\(B\)</span> gives</p>
+<p><span class="math display">\[
+M_{2,B}+n_B(\mu_B-\mu)^2.
+\]</span></p>
+<p>Adding the two contributions,</p>
+<p><span class="math display">\[
+M_2
+  =M_{2,A}+M_{2,B}
+   +n_A(\mu_A-\mu)^2
+   +n_B(\mu_B-\mu)^2.
+\]</span></p>
+<p>Now express both distances from the combined mean using <span class="math inline">\(\delta=\mu_B-\mu_A\)</span>. Because</p>
+<p><span class="math display">\[
+\mu=\mu_A+\delta\frac{n_B}{n},
+\]</span></p>
+<p>we have</p>
+<p><span class="math display">\[
+\mu_A-\mu=-\delta\frac{n_B}{n}.
+\]</span></p>
+<p>Similarly,</p>
+<p><span class="math display">\[
+\mu_B-\mu=\delta\frac{n_A}{n}.
+\]</span></p>
+<p>Substituting these two distances into the correction gives</p>
+<p><span class="math display">\[
+\begin{aligned}
+&amp;n_A(\mu_A-\mu)^2+n_B(\mu_B-\mu)^2\\
+&amp;\quad=n_A\delta^2\frac{n_B^2}{n^2}
+       +n_B\delta^2\frac{n_A^2}{n^2}\\
+&amp;\quad=\delta^2\frac{n_A n_B(n_A+n_B)}{n^2}\\
+&amp;\quad=\delta^2\frac{n_A n_B}{n},
+\end{aligned}
+\]</span></p>
+<p>where the last step uses <span class="math inline">\(n=n_A+n_B\)</span>. Therefore,</p>
+<p><span class="math display">\[
+M_2
+  =M_{2,A}+M_{2,B}
+   +\delta^2\frac{n_A n_B}{n}.
+\]</span></p>
+</div>
+</div>
+</div>
+<p><img src="../assets/layernorm/welford-merge.svg" class="img-fluid" style="width:100.0%" alt="Two Welford states, each containing a count, mean, and M2, are combined with a correction term based on the distance between their means."></p>
+<p>Now apply this to lanes 0 and 2:</p>
+<pre class="text"><code>A = (count=2, mean=3, M2=8)
+B = (count=2, mean=5, M2=8)
+
+count = 2 + 2 = 4
+delta = 5 - 3 = 2
+mean  = 3 + 2 * (2 / 4) = 4
+M2    = 8 + 8 + 2² * (2 * 2 / 4) = 20</code></pre>
+<p>So lanes 0 and 2 become the state <code>(4, 4, 20)</code>. In the same round, lanes 1 and 3 become <code>(4, 5, 20)</code>. Combining those two remaining states gives</p>
+<pre class="text"><code>(count=8, mean=4.5, M2=42)</code></pre>
+<p>Therefore, the variance of the complete row is</p>
+<p><span class="math display">\[
+\sigma^2=\frac{42}{8}=5.25.
+\]</span></p>
+<p>The code for one merge follows the same equations:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>__device__ __forceinline__ WelfordState welford_combine<span class="op">(</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    WelfordState left<span class="op">,</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    WelfordState right</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>right<span class="op">.</span>count <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="cf">return</span> left<span class="op">;</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>left<span class="op">.</span>count <span class="op">==</span> <span class="dv">0</span><span class="op">)</span> <span class="cf">return</span> right<span class="op">;</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> count <span class="op">=</span> left<span class="op">.</span>count <span class="op">+</span> right<span class="op">.</span>count<span class="op">;</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> difference <span class="op">=</span> right<span class="op">.</span>mean <span class="op">-</span> left<span class="op">.</span>mean<span class="op">;</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> right_fraction <span class="op">=</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>        <span class="kw">static_cast</span><span class="op">&lt;</span><span class="dt">float</span><span class="op">&gt;(</span>right<span class="op">.</span>count<span class="op">)</span> <span class="op">/</span> count<span class="op">;</span></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    WelfordState combined<span class="op">;</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>    combined<span class="op">.</span>mean <span class="op">=</span> left<span class="op">.</span>mean <span class="op">+</span> difference <span class="op">*</span> right_fraction<span class="op">;</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>    combined<span class="op">.</span>m2 <span class="op">=</span> left<span class="op">.</span>m2 <span class="op">+</span> right<span class="op">.</span>m2</span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>        <span class="op">+</span> difference <span class="op">*</span> difference</span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>        <span class="op">*</span> <span class="kw">static_cast</span><span class="op">&lt;</span><span class="dt">float</span><span class="op">&gt;(</span>left<span class="op">.</span>count<span class="op">)</span> <span class="op">*</span> right_fraction<span class="op">;</span></span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a>    combined<span class="op">.</span>count <span class="op">=</span> count<span class="op">;</span></span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> combined<span class="op">;</span></span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The zero-count cases are needed when a row has fewer than 32 elements or its length is not a multiple of 32. Some lanes may receive no values, and an empty state should not change the result.</p>
+</section>
+<section id="reducing-the-states-across-the-warp" class="level3" data-number="3.3.3">
+<h3 data-number="3.3.3" class="anchored" data-anchor-id="reducing-the-states-across-the-warp"><span class="header-section-number">3.3.3</span> Reducing the states across the warp</h3>
+<p>Our four-lane example needed two merge rounds. A real 32-lane warp needs five:</p>
+<pre class="text"><code>offset 16 -&gt; 32 states become 16
+offset  8 -&gt; 16 states become 8
+offset  4 -&gt;  8 states become 4
+offset  2 -&gt;  4 states become 2
+offset  1 -&gt;  2 states become 1</code></pre>
+<p>The Welford state contains three values, so every round shuffles the mean, <code>m2</code>, and count from the partner lane before combining them:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>__device__ __forceinline__ WelfordState warp_reduce_welford<span class="op">(</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    WelfordState state</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">unsigned</span> <span class="dt">int</span> mask <span class="op">=</span> <span class="bn">0xffffffff</span><span class="bu">u</span><span class="op">;</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> lane <span class="op">=</span> threadIdx<span class="op">.</span>x <span class="op">&amp;</span> <span class="op">(</span>warpSize <span class="op">-</span> <span class="dv">1</span><span class="op">);</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> offset <span class="op">=</span> <span class="dv">16</span><span class="op">;</span> offset <span class="op">&gt;</span> <span class="dv">0</span><span class="op">;</span> offset <span class="op">/=</span> <span class="dv">2</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>        WelfordState other<span class="op">;</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>        other<span class="op">.</span>mean <span class="op">=</span> __shfl_down_sync<span class="op">(</span>mask<span class="op">,</span> state<span class="op">.</span>mean<span class="op">,</span> offset<span class="op">);</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>        other<span class="op">.</span>m2 <span class="op">=</span> __shfl_down_sync<span class="op">(</span>mask<span class="op">,</span> state<span class="op">.</span>m2<span class="op">,</span> offset<span class="op">);</span></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>        other<span class="op">.</span>count <span class="op">=</span> __shfl_down_sync<span class="op">(</span>mask<span class="op">,</span> state<span class="op">.</span>count<span class="op">,</span> offset<span class="op">);</span></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>lane <span class="op">+</span> offset <span class="op">&lt;</span> warpSize<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>            state <span class="op">=</span> welford_combine<span class="op">(</span>state<span class="op">,</span> other<span class="op">);</span></span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> state<span class="op">;</span></span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>After five rounds, lane 0 owns the state for the complete row. It broadcasts the mean, <code>m2</code>, and count back to the other lanes so that every lane can calculate the same variance and reciprocal standard deviation.</p>
+</section>
+<section id="why-we-still-read-the-input-twice" class="level3" data-number="3.3.4">
+<h3 data-number="3.3.4" class="anchored" data-anchor-id="why-we-still-read-the-input-twice"><span class="header-section-number">3.3.4</span> Why we still read the input twice</h3>
+<p>During the first pass, each lane loads its part of the row and updates its Welford state. Once the reduction finishes, those input values are no longer available unless we kept every one of them in registers.</p>
+<p>For a row of 4096 elements, each lane handles 128 values. Keeping all 128 values in registers would require roughly 128 registers per thread just for the row, before counting the Welford state and other temporary values. That can cause register spilling or reduce how many warps fit on an SM.</p>
+<p>So our general warp kernel reads the input twice: one coalesced pass to compute the statistics and one coalesced pass to normalize and write the output.</p>
+<p><img src="../assets/layernorm/layernorm-memory-passes.svg" class="img-fluid" style="width:100.0%" alt="The naive LayerNorm kernel reads the input three times, the Welford warp kernel reads it twice, and the shared-memory block kernel reads it once and reuses an on-chip row copy."></p>
+</section>
+<section id="cost-after-coalescing" class="level3" data-number="3.3.5">
+<h3 data-number="3.3.5" class="anchored" data-anchor-id="cost-after-coalescing"><span class="header-section-number">3.3.5</span> Cost after coalescing</h3>
+<p>The useful memory traffic is still the same as the two-pass, one-thread kernel:</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Operation</th>
+<th style="text-align: right;">Elements transferred</th>
+<th style="text-align: right;">Bytes transferred</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>First read of <span class="math inline">\(\mathbf{X}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Second read of <span class="math inline">\(\mathbf{X}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Read <span class="math inline">\(\boldsymbol{\gamma}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Read <span class="math inline">\(\boldsymbol{\beta}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Write <span class="math inline">\(\mathbf{Y}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td><strong>Total useful traffic</strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(5MN\)</span></strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(20MN\)</span></strong></td>
+</tr>
+</tbody>
+</table>
+<p>What changed is how efficiently the matrix values move through memory. With one thread per row, a warp can use only 128 bytes from 1024 bytes transferred under our simplified 32-byte-sector model:</p>
+<p><span class="math display">\[
+\eta_{\text{one thread per row}}
+  =\frac{128}{1024}
+  =\frac{1}{8}.
+\]</span></p>
+<p>With one warp reading across one row, the same 128 useful bytes occupy four 32-byte sectors:</p>
+<p><span class="math display">\[
+\eta_{\text{one warp per row}}
+  =\frac{128}{128}
+  =1.
+\]</span></p>
+<p>The two reads of <span class="math inline">\(\mathbf{X}\)</span> and the write of <span class="math inline">\(\mathbf{Y}\)</span> account for <span class="math inline">\(12MN\)</span> useful bytes. Under this simplified model, their effective traffic can move from</p>
+<p><span class="math display">\[
+\frac{12MN}{1/8}=96MN \quad \text{bytes}
+\]</span></p>
+<p>towards</p>
+<p><span class="math display">\[
+12MN \quad \text{bytes}.
+\]</span></p>
+<p>That is an improvement of up to 8x in transaction efficiency for the matrix reads and writes. It does not promise an 8x reduction in runtime. The Welford updates, warp communication, cache behavior, alignment, and row size still affect the result.</p>
+<p>The warp reduction also adds work. Every row needs five rounds of shuffles, and each merge performs several floating-point operations. For rows containing hundreds or thousands of features, that fixed communication cost is usually small compared with the work over all <span class="math inline">\(N\)</span> elements, but it is not free.</p>
+</section>
+<section id="turning-the-complete-algorithm-into-code" class="level3" data-number="3.3.6">
+<h3 data-number="3.3.6" class="anchored" data-anchor-id="turning-the-complete-algorithm-into-code"><span class="header-section-number">3.3.6</span> Turning the complete algorithm into code</h3>
+<p>We now have every piece of the warp kernel. One warp owns one row. Every lane builds a local Welford state, the warp combines those states, and every lane then revisits its columns to write the output.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>__global__ <span class="dt">void</span> warp_layernorm_kernel<span class="op">(</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> <span class="dt">float</span><span class="op">*</span> <span class="ex">__restrict__</span> input<span class="op">,</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> <span class="dt">float</span><span class="op">*</span> <span class="ex">__restrict__</span> weight<span class="op">,</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> <span class="dt">float</span><span class="op">*</span> <span class="ex">__restrict__</span> bias<span class="op">,</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span><span class="op">*</span> <span class="ex">__restrict__</span> output<span class="op">,</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> M<span class="op">,</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> N<span class="op">,</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> epsilon</span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> row <span class="op">=</span> blockIdx<span class="op">.</span>x<span class="op">;</span></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> lane <span class="op">=</span> threadIdx<span class="op">.</span>x<span class="op">;</span></span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="op">(</span>row <span class="op">&gt;=</span> M<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> <span class="dt">float</span><span class="op">*</span> input_row <span class="op">=</span> input <span class="op">+</span> row <span class="op">*</span> N<span class="op">;</span></span>
+<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span><span class="op">*</span> output_row <span class="op">=</span> output <span class="op">+</span> row <span class="op">*</span> N<span class="op">;</span></span>
+<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a>    WelfordState local <span class="op">=</span> <span class="op">{</span><span class="fl">0.0</span><span class="bu">f</span><span class="op">,</span> <span class="fl">0.0</span><span class="bu">f</span><span class="op">,</span> <span class="dv">0</span><span class="op">};</span></span>
+<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> column <span class="op">=</span> lane<span class="op">;</span> column <span class="op">&lt;</span> N<span class="op">;</span> column <span class="op">+=</span> warpSize<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>        local <span class="op">=</span> welford_update<span class="op">(</span>local<span class="op">,</span> input_row<span class="op">[</span>column<span class="op">]);</span></span>
+<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-26"><a href="#cb13-26" aria-hidden="true" tabindex="-1"></a>    WelfordState row_state <span class="op">=</span> warp_reduce_welford<span class="op">(</span>local<span class="op">);</span></span>
+<span id="cb13-27"><a href="#cb13-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-28"><a href="#cb13-28" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> mean <span class="op">=</span> __shfl_sync<span class="op">(</span><span class="bn">0xffffffff</span><span class="bu">u</span><span class="op">,</span> row_state<span class="op">.</span>mean<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb13-29"><a href="#cb13-29" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> m2 <span class="op">=</span> __shfl_sync<span class="op">(</span><span class="bn">0xffffffff</span><span class="bu">u</span><span class="op">,</span> row_state<span class="op">.</span>m2<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb13-30"><a href="#cb13-30" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> count <span class="op">=</span> __shfl_sync<span class="op">(</span><span class="bn">0xffffffff</span><span class="bu">u</span><span class="op">,</span> row_state<span class="op">.</span>count<span class="op">,</span> <span class="dv">0</span><span class="op">);</span></span>
+<span id="cb13-31"><a href="#cb13-31" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> variance <span class="op">=</span> m2 <span class="op">/</span> <span class="kw">static_cast</span><span class="op">&lt;</span><span class="dt">float</span><span class="op">&gt;(</span>count<span class="op">);</span></span>
+<span id="cb13-32"><a href="#cb13-32" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> reciprocal_std <span class="op">=</span> rsqrtf<span class="op">(</span>variance <span class="op">+</span> epsilon<span class="op">);</span></span>
+<span id="cb13-33"><a href="#cb13-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-34"><a href="#cb13-34" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> column <span class="op">=</span> lane<span class="op">;</span> column <span class="op">&lt;</span> N<span class="op">;</span> column <span class="op">+=</span> warpSize<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb13-35"><a href="#cb13-35" aria-hidden="true" tabindex="-1"></a>        <span class="dt">float</span> normalized <span class="op">=</span></span>
+<span id="cb13-36"><a href="#cb13-36" aria-hidden="true" tabindex="-1"></a>            <span class="op">(</span>input_row<span class="op">[</span>column<span class="op">]</span> <span class="op">-</span> mean<span class="op">)</span> <span class="op">*</span> reciprocal_std<span class="op">;</span></span>
+<span id="cb13-37"><a href="#cb13-37" aria-hidden="true" tabindex="-1"></a>        output_row<span class="op">[</span>column<span class="op">]</span> <span class="op">=</span></span>
+<span id="cb13-38"><a href="#cb13-38" aria-hidden="true" tabindex="-1"></a>            normalized <span class="op">*</span> weight<span class="op">[</span>column<span class="op">]</span> <span class="op">+</span> bias<span class="op">[</span>column<span class="op">];</span></span>
+<span id="cb13-39"><a href="#cb13-39" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb13-40"><a href="#cb13-40" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb13-41"><a href="#cb13-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-42"><a href="#cb13-42" aria-hidden="true" tabindex="-1"></a><span class="dt">void</span> launch_layernorm<span class="op">(</span></span>
+<span id="cb13-43"><a href="#cb13-43" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> <span class="dt">float</span><span class="op">*</span> input<span class="op">,</span></span>
+<span id="cb13-44"><a href="#cb13-44" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> <span class="dt">float</span><span class="op">*</span> weight<span class="op">,</span></span>
+<span id="cb13-45"><a href="#cb13-45" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> <span class="dt">float</span><span class="op">*</span> bias<span class="op">,</span></span>
+<span id="cb13-46"><a href="#cb13-46" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span><span class="op">*</span> output<span class="op">,</span></span>
+<span id="cb13-47"><a href="#cb13-47" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> M<span class="op">,</span></span>
+<span id="cb13-48"><a href="#cb13-48" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> N<span class="op">,</span></span>
+<span id="cb13-49"><a href="#cb13-49" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> epsilon</span>
+<span id="cb13-50"><a href="#cb13-50" aria-hidden="true" tabindex="-1"></a><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb13-51"><a href="#cb13-51" aria-hidden="true" tabindex="-1"></a>    dim3 block_size<span class="op">(</span><span class="dv">32</span><span class="op">);</span></span>
+<span id="cb13-52"><a href="#cb13-52" aria-hidden="true" tabindex="-1"></a>    dim3 grid_size<span class="op">(</span>M<span class="op">);</span></span>
+<span id="cb13-53"><a href="#cb13-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-54"><a href="#cb13-54" aria-hidden="true" tabindex="-1"></a>    warp_layernorm_kernel<span class="op">&lt;&lt;&lt;</span>grid_size<span class="op">,</span> block_size<span class="op">&gt;&gt;&gt;(</span></span>
+<span id="cb13-55"><a href="#cb13-55" aria-hidden="true" tabindex="-1"></a>        input<span class="op">,</span> weight<span class="op">,</span> bias<span class="op">,</span> output<span class="op">,</span> M<span class="op">,</span> N<span class="op">,</span> epsilon</span>
+<span id="cb13-56"><a href="#cb13-56" aria-hidden="true" tabindex="-1"></a>    <span class="op">);</span></span>
+<span id="cb13-57"><a href="#cb13-57" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The launcher uses exactly 32 threads because the reduction communicates within one warp. A row can contain more than 32 elements; the loop simply gives each lane more columns separated by <code>warpSize</code>.</p>
+<div class="callout callout-style-default callout-note callout-titled" title="When is one warp not enough?">
+<div class="callout-header d-flex align-content-center collapsed" data-bs-toggle="collapse" data-bs-target=".callout-3-contents" aria-controls="callout-3" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Note</span>When is one warp not enough?
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-3" class="callout-3-contents callout-collapse collapse">
+<div class="callout-body-container callout-body">
+<p>As rows become wider, every lane performs a longer serial loop and the kernel still exposes only 32-way parallelism inside that row. A larger block can give wide rows more threads, but then warp shuffles alone are no longer enough. The partial results from different warps must also meet through shared memory.</p>
+</div>
+</div>
+</div>
+</section>
+</section>
+<section id="reading-the-input-only-once" class="level2" data-number="3.4">
+<h2 data-number="3.4" class="anchored" data-anchor-id="reading-the-input-only-once"><span class="header-section-number">3.4</span> Reading the input only once</h2>
+<p>The warp kernel fused the two statistics into one pass, but it still rereads the input to produce the output. To remove that read, the row must survive somewhere on chip until the mean and variance are ready.</p>
+<p>Instead of trying to keep an arbitrary number of values in registers, we can assign one block to one row and copy the row into shared memory:</p>
+<pre class="text"><code>global X -&gt; shared row cache
+                 |
+                 +-&gt; calculate mean
+                 +-&gt; calculate variance
+                 +-&gt; normalize and write Y</code></pre>
+<p>The row is read once from global memory. The following passes still exist, but they read the shared-memory copy instead of travelling back to global memory.</p>
+<section id="loading-the-row-cooperatively" class="level3" data-number="3.4.1">
+<h3 data-number="3.4.1" class="anchored" data-anchor-id="loading-the-row-cooperatively"><span class="header-section-number">3.4.1</span> Loading the row cooperatively</h3>
+<p>If the block contains <span class="math inline">\(T\)</span> threads, thread <span class="math inline">\(t\)</span> loads columns <span class="math inline">\(t,t+T,t+2T,\ldots\)</span>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="at">extern</span> __shared__ <span class="dt">float</span> shared<span class="op">[];</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span><span class="op">*</span> row_cache <span class="op">=</span> shared<span class="op">;</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span><span class="op">*</span> reduction <span class="op">=</span> shared <span class="op">+</span> N<span class="op">;</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> column <span class="op">=</span> threadIdx<span class="op">.</span>x<span class="op">;</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>     column <span class="op">&lt;</span> N<span class="op">;</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>     column <span class="op">+=</span> blockDim<span class="op">.</span>x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>    row_cache<span class="op">[</span>column<span class="op">]</span> <span class="op">=</span> input_row<span class="op">[</span>column<span class="op">];</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>__syncthreads<span class="op">();</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The first <span class="math inline">\(N\)</span> floats hold the row. The next <code>blockDim.x</code> floats are scratch space for reductions. Neighboring threads load neighboring columns, so the global-memory access is coalesced.</p>
+<p>The barrier is necessary. Without it, one thread could begin reading a shared value before the thread responsible for that value had written it.</p>
+</section>
+<section id="reducing-across-a-block" class="level3" data-number="3.4.2">
+<h3 data-number="3.4.2" class="anchored" data-anchor-id="reducing-across-a-block"><span class="header-section-number">3.4.2</span> Reducing across a block</h3>
+<p>A warp shuffle cannot communicate across warp boundaries. A 256-thread block contains eight warps, so we need a block-wide reduction. For clarity, our teaching kernel writes one partial sum per thread to shared memory and reduces those values in a tree:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>__device__ __forceinline__ <span class="dt">float</span> block_reduce_sum<span class="op">(</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> value<span class="op">,</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span><span class="op">*</span> reduction</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">int</span> thread <span class="op">=</span> threadIdx<span class="op">.</span>x<span class="op">;</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    reduction<span class="op">[</span>thread<span class="op">]</span> <span class="op">=</span> value<span class="op">;</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    __syncthreads<span class="op">();</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> stride <span class="op">=</span> blockDim<span class="op">.</span>x <span class="op">/</span> <span class="dv">2</span><span class="op">;</span> stride <span class="op">&gt;</span> <span class="dv">0</span><span class="op">;</span> stride <span class="op">/=</span> <span class="dv">2</span><span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">(</span>thread <span class="op">&lt;</span> stride<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>            reduction<span class="op">[</span>thread<span class="op">]</span> <span class="op">+=</span> reduction<span class="op">[</span>thread <span class="op">+</span> stride<span class="op">];</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>        __syncthreads<span class="op">();</span></span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> reduction<span class="op">[</span><span class="dv">0</span><span class="op">];</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>With 256 threads, the number of active partial sums changes as</p>
+<pre class="text"><code>256 -&gt; 128 -&gt; 64 -&gt; 32 -&gt; 16 -&gt; 8 -&gt; 4 -&gt; 2 -&gt; 1</code></pre>
+<p>All threads return the value stored in <code>reduction[0]</code>. The repeated barriers make this helper easy to understand, but they are not free. A production version would normally reduce within each warp using shuffles, place only one partial result per warp in shared memory, and let one warp finish the final reduction. The simpler tree keeps our attention on the global-memory tradeoff.</p>
+</section>
+<section id="reusing-the-cached-row" class="level3" data-number="3.4.3">
+<h3 data-number="3.4.3" class="anchored" data-anchor-id="reusing-the-cached-row"><span class="header-section-number">3.4.3</span> Reusing the cached row</h3>
+<p>Once the row is available in shared memory, we can use the original two-pass variance formula without rereading global memory:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb18"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span> local_sum <span class="op">=</span> <span class="fl">0.0</span><span class="bu">f</span><span class="op">;</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> column <span class="op">=</span> thread<span class="op">;</span> column <span class="op">&lt;</span> N<span class="op">;</span> column <span class="op">+=</span> blockDim<span class="op">.</span>x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    local_sum <span class="op">+=</span> row_cache<span class="op">[</span>column<span class="op">];</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span> sum <span class="op">=</span> block_reduce_sum<span class="op">(</span>local_sum<span class="op">,</span> reduction<span class="op">);</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span> mean <span class="op">=</span> sum <span class="op">/</span> <span class="kw">static_cast</span><span class="op">&lt;</span><span class="dt">float</span><span class="op">&gt;(</span>N<span class="op">);</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span> local_squared_difference <span class="op">=</span> <span class="fl">0.0</span><span class="bu">f</span><span class="op">;</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> column <span class="op">=</span> thread<span class="op">;</span> column <span class="op">&lt;</span> N<span class="op">;</span> column <span class="op">+=</span> blockDim<span class="op">.</span>x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> difference <span class="op">=</span> row_cache<span class="op">[</span>column<span class="op">]</span> <span class="op">-</span> mean<span class="op">;</span></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>    local_squared_difference <span class="op">+=</span> difference <span class="op">*</span> difference<span class="op">;</span></span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span> squared_difference <span class="op">=</span></span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>    block_reduce_sum<span class="op">(</span>local_squared_difference<span class="op">,</span> reduction<span class="op">);</span></span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span> variance <span class="op">=</span> squared_difference <span class="op">/</span> <span class="kw">static_cast</span><span class="op">&lt;</span><span class="dt">float</span><span class="op">&gt;(</span>N<span class="op">);</span></span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a><span class="dt">float</span> reciprocal_std <span class="op">=</span> rsqrtf<span class="op">(</span>variance <span class="op">+</span> epsilon<span class="op">);</span></span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> <span class="op">(</span><span class="dt">int</span> column <span class="op">=</span> thread<span class="op">;</span> column <span class="op">&lt;</span> N<span class="op">;</span> column <span class="op">+=</span> blockDim<span class="op">.</span>x<span class="op">)</span> <span class="op">{</span></span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a>    <span class="dt">float</span> normalized <span class="op">=</span></span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a>        <span class="op">(</span>row_cache<span class="op">[</span>column<span class="op">]</span> <span class="op">-</span> mean<span class="op">)</span> <span class="op">*</span> reciprocal_std<span class="op">;</span></span>
+<span id="cb18-23"><a href="#cb18-23" aria-hidden="true" tabindex="-1"></a>    output_row<span class="op">[</span>column<span class="op">]</span> <span class="op">=</span></span>
+<span id="cb18-24"><a href="#cb18-24" aria-hidden="true" tabindex="-1"></a>        normalized <span class="op">*</span> weight<span class="op">[</span>column<span class="op">]</span> <span class="op">+</span> bias<span class="op">[</span>column<span class="op">];</span></span>
+<span id="cb18-25"><a href="#cb18-25" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Notice the distinction: the algorithm still examines the row three times, but only the first examination reads <span class="math inline">\(\mathbf{X}\)</span> from global memory. The other two use shared memory. Saying that the entire algorithm has only one pass would be misleading; it has one <strong>global input read</strong>.</p>
+</section>
+</section>
+<section id="cost-of-the-shared-memory-block-kernel" class="level2" data-number="3.5">
+<h2 data-number="3.5" class="anchored" data-anchor-id="cost-of-the-shared-memory-block-kernel"><span class="header-section-number">3.5</span> Cost of the shared-memory block kernel</h2>
+<section id="memory-access-2" class="level3" data-number="3.5.1">
+<h3 data-number="3.5.1" class="anchored" data-anchor-id="memory-access-2"><span class="header-section-number">3.5.1</span> Memory access</h3>
+<p>The global-memory traffic is now</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Operation</th>
+<th style="text-align: right;">Elements transferred</th>
+<th style="text-align: right;">Bytes transferred</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Read <span class="math inline">\(\mathbf{X}\)</span> into shared memory</td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Read <span class="math inline">\(\boldsymbol{\gamma}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Read <span class="math inline">\(\boldsymbol{\beta}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="even">
+<td>Write <span class="math inline">\(\mathbf{Y}\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(4MN\)</span></td>
+</tr>
+<tr class="odd">
+<td><strong>Total</strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(4MN\)</span></strong></td>
+<td style="text-align: right;"><strong><span class="math inline">\(16MN\)</span></strong></td>
+</tr>
+</tbody>
+</table>
+<p>The naive kernel moved <span class="math inline">\(24MN\)</span> bytes in our model. This version moves <span class="math inline">\(16MN\)</span> bytes, so keeping the row in shared memory removes one third of that useful global-memory traffic.</p>
+<p>The arithmetic work across the elements is again approximately <span class="math inline">\(8MN\)</span> FLOPs, plus one epsilon addition per row and the reduction overhead. Ignoring those lower-order terms, the arithmetic intensity approaches</p>
+<p><span class="math display">\[
+AI_{\text{shared block}}
+  \approx\frac{8MN}{16MN}
+  =0.5\ \text{FLOPs/byte}.
+\]</span></p>
+<p>We have not made the shared-memory accesses disappear. The block writes the row to shared memory, reads it for the mean, reads it for the variance, and reads it during normalization. Those bytes travel through a much faster on-chip memory rather than through global memory.</p>
+</section>
+<section id="the-price-of-keeping-the-row" class="level3" data-number="3.5.2">
+<h3 data-number="3.5.2" class="anchored" data-anchor-id="the-price-of-keeping-the-row"><span class="header-section-number">3.5.2</span> The price of keeping the row</h3>
+<p>For a row of <span class="math inline">\(N\)</span> FP32 values and a block of <span class="math inline">\(T\)</span> threads, our implementation requests</p>
+<p><span class="math display">\[
+S=4(N+T) \quad \text{bytes of shared memory per block}.
+\]</span></p>
+<p>With <span class="math inline">\(N=4096\)</span> and <span class="math inline">\(T=256\)</span>, that is</p>
+<p><span class="math display">\[
+4(4096+256)=17{,}408 \quad \text{bytes}.
+\]</span></p>
+<p>Larger rows consume more shared memory, which can reduce the number of blocks resident on an SM or exceed the device’s per-block limit. The block kernel also pays for several <code>__syncthreads()</code> barriers and a cross-warp reduction.</p>
+<p>So the two optimized designs make different trades:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 21%">
+<col style="width: 28%">
+<col style="width: 28%">
+<col style="width: 21%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Design</th>
+<th style="text-align: right;">Global reads of <span class="math inline">\(\mathbf{X}\)</span></th>
+<th style="text-align: right;">Threads per row</th>
+<th>Main on-chip cost</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Warp + Welford</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">32</td>
+<td>shuffle and Welford arithmetic</td>
+</tr>
+<tr class="even">
+<td>Shared-memory block</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">256 in our example</td>
+<td>row cache, barriers, block reductions</td>
+</tr>
+</tbody>
+</table>
+<p>The shared-memory version moves fewer global bytes and exposes more parallelism inside a wide row. The warp version uses fewer resources and has cheaper synchronization.</p>
+<div class="callout callout-style-default callout-note callout-titled" title="Which version is faster?">
+<div class="callout-header d-flex align-content-center collapsed" data-bs-toggle="collapse" data-bs-target=".callout-4-contents" aria-controls="callout-4" aria-expanded="false" aria-label="Toggle callout">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Note</span>Which version is faster?
+</div>
+<div class="callout-btn-toggle d-inline-block border-0 py-1 ps-1 pe-0 float-end"><i class="callout-toggle"></i></div>
+</div>
+<div id="callout-4" class="callout-4-contents callout-collapse collapse">
+<div class="callout-body-container callout-body">
+<p>There is no architecture-independent feature width at which block-per-row becomes better than warp-per-row. The crossover changes with row count, datatype, shared-memory capacity, register pressure, cache behavior, and GPU architecture. So we need measurements on a stated device and workload before choosing a winner.</p>
+</div>
+</div>
+</div>
+</section>
+</section>
+<section id="comparing-the-versions" class="level2" data-number="3.6">
+<h2 data-number="3.6" class="anchored" data-anchor-id="comparing-the-versions"><span class="header-section-number">3.6</span> Comparing the versions</h2>
+<p>We changed one part of the kernel at a time, so let us put those changes next to each other:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 15%">
+<col style="width: 21%">
+<col style="width: 21%">
+<col style="width: 21%">
+<col style="width: 21%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Kernel</th>
+<th style="text-align: right;">Threads per row</th>
+<th style="text-align: right;">Global reads of <span class="math inline">\(\mathbf{X}\)</span></th>
+<th style="text-align: right;">Total useful bytes</th>
+<th style="text-align: right;">Approximate FLOPs</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Naive</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;"><span class="math inline">\(24MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(8MN+M\)</span></td>
+</tr>
+<tr class="even">
+<td>One-thread Welford</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;"><span class="math inline">\(20MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(10MN\)</span></td>
+</tr>
+<tr class="odd">
+<td>Warp + Welford</td>
+<td style="text-align: right;">32</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;"><span class="math inline">\(20MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(10MN\)</span> + warp merges</td>
+</tr>
+<tr class="even">
+<td>Shared-memory block</td>
+<td style="text-align: right;">256 in our example</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;"><span class="math inline">\(16MN\)</span></td>
+<td style="text-align: right;"><span class="math inline">\(8MN+M\)</span> + block reductions</td>
+</tr>
+</tbody>
+</table>
+<p>This table still does not capture the worst problem in the first kernel: its matrix reads and writes are strided across a warp. The optimized kernels make those transactions coalesced in addition to reducing the input passes.</p>
+<p>There are now clear questions for a benchmark:</p>
+<ul>
+<li>Does the warp kernel’s cheaper synchronization outweigh its second global input read?</li>
+<li>At what row width does 32-way parallelism stop being enough?</li>
+<li>How much occupancy does the shared-memory row cache cost?</li>
+<li>Does Welford’s additional arithmetic matter, or is the kernel still limited mainly by data movement?</li>
+<li>How close are all three kernels to a trusted LayerNorm implementation within an agreed numerical tolerance?</li>
+</ul>
+<p>Those measurements require a stated GPU, CUDA version, tensor shapes, warm-up procedure, and timing method. Until we have them, the cost model tells us what changed, but it does not manufacture a speedup number.</p>
+</section>
+<section id="main-takeaways" class="level2" data-number="3.7">
+<h2 data-number="3.7" class="anchored" data-anchor-id="main-takeaways"><span class="header-section-number">3.7</span> Main takeaways</h2>
+<p>LayerNorm looks like one equation, but its statistics create a dependency that determines where the data has to live. We began with three global input reads and then treated each source of waste separately.</p>
+<ul>
+<li><p><strong>LayerNorm is a row-wise operation.</strong> Every row has its own mean and variance. The learned <span class="math inline">\(\gamma\)</span> and <span class="math inline">\(\beta\)</span> vectors are reused across rows.</p></li>
+<li><p><strong>The straightforward kernel is parallel only between rows.</strong> One thread still walks through all <span class="math inline">\(N\)</span> columns three times, and neighboring threads make strided requests because they own different rows.</p></li>
+<li><p><strong>Useful bytes and transferred bytes are different quantities.</strong> Even the ideal useful traffic is large relative to the arithmetic, and uncoalesced warp access can waste most of each memory transaction.</p></li>
+<li><p><strong>One-pass variance needs numerical care.</strong> The identity <span class="math inline">\(E[x^2]-E[x]^2\)</span> is inexpensive but can lose precision. Welford’s algorithm performs more arithmetic while avoiding that subtraction of nearly equal numbers.</p></li>
+<li><p><strong>One warp per row fixes the ownership problem.</strong> Neighboring lanes read neighboring features, and the work inside a row is divided across 32 threads.</p></li>
+<li><p><strong>Parallel Welford is more than a sum reduction.</strong> Each lane produces a <code>(count, mean, M2)</code> state. Merging two states requires correcting for the distance between their means before the states can represent one group.</p></li>
+<li><p><strong>A fused statistics pass does not imply one global input read.</strong> Unless the values remain in registers or shared memory, the kernel must reread the row after its mean and variance become available.</p></li>
+<li><p><strong>Shared memory removes that final reread at a cost.</strong> Caching a row reduces useful global-memory traffic from <span class="math inline">\(24MN\)</span> to <span class="math inline">\(16MN\)</span> bytes in our model, but it consumes shared memory and introduces block-wide reductions and barriers.</p></li>
+<li><p><strong>An optimization is a trade, not a slogan.</strong> Warp-per-row and block-per-row spend different resources. Counting traffic explains what we changed; benchmarking tells us whether the trade was profitable on the GPU and shapes we actually care about.</p></li>
+</ul>
+<p>The common thread through all three kernels is ownership. First one thread owned a row, then one warp cooperated on it, and finally one block kept it on chip. The LayerNorm equation never changed. What changed was which threads saw the data, how their partial statistics were combined, and whether the row had to cross global memory again.</p>
+
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+            // target, if specified
+            link.setAttribute("target", "_blank");
+            if (link.getAttribute("rel") === null) {
+              link.setAttribute("rel", "noopener");
+            }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../chapters/optimizing-softmax.html" class="pagination-link" aria-label="Softmax">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Softmax</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+  </div>
+</nav>
+</div> <!-- /content -->
+
+
+
+
+<footer class="footer"><div class="nav-footer"><div class="nav-footer-center"><div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/athleticcoder21/inference-book/edit/main/chapters/optimizing-layernorm.qmd" class="toc-action"><i class="bi bi-github"></i>Edit this page</a></li><li><a href="https://github.com/athleticcoder21/inference-book/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></div></div></footer><script src="../site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>

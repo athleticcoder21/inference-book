@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 <meta name="author" content="Anshuman Mishra">
-<meta name="dcterms.date" content="2026-09-12">
+<meta name="dcterms.date" content="2026-09-17">
 <meta name="description" content="A slowly growing book about reasoning through CUDA kernels from first principles.">
 
 <title>How to make your models fast</title>
@@ -137,13 +137,19 @@ ul.task-list li input[type="checkbox"] {
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="./chapters/making-gemv-fast.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Making GEMV Fast</span></span></a>
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">GEMV</span></span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="./chapters/optimizing-softmax.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Making Softmax Fast</span></span></a>
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./chapters/optimizing-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">LayerNorm</span></span></a>
   </div>
 </li>
       </ul>
@@ -194,7 +200,7 @@ ul.task-list li input[type="checkbox"] {
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">September 12, 2026</p>
+      <p class="date">September 17, 2026</p>
     </div>
   </div>
   
@@ -225,8 +231,9 @@ ul.task-list li input[type="checkbox"] {
 </section>
 <section id="current-chapters" class="level2">
 <h2 class="anchored" data-anchor-id="current-chapters">Current chapters</h2>
-<p><a class="chapter-card" href="chapters/making-gemv-fast.html"> <span class="chapter-card__eyebrow">Chapter 1 · Kernels</span> <strong>Making GEMV Fast</strong> <span>One matrix, one vector, and an access pattern that quietly wastes most of the GPU’s memory bandwidth.</span> <span class="chapter-card__link">Read the chapter →</span> </a></p>
-<p><a class="chapter-card" href="chapters/optimizing-softmax.html"> <span class="chapter-card__eyebrow">Chapter 2 · Kernels</span> <strong>Making Softmax Fast</strong> <span>From a direct row-wise implementation to online statistics, coalesced reads, and warp reductions.</span> <span class="chapter-card__link">Read the chapter →</span> </a></p>
+<p><a class="chapter-card" href="chapters/making-gemv-fast.html"> <span class="chapter-card__eyebrow">Chapter 1 · Kernels</span> <strong>GEMV</strong> <span>One matrix, one vector, and an access pattern that quietly wastes most of the GPU’s memory bandwidth.</span> <span class="chapter-card__link">Read the chapter →</span> </a></p>
+<p><a class="chapter-card" href="chapters/optimizing-softmax.html"> <span class="chapter-card__eyebrow">Chapter 2 · Kernels</span> <strong>Softmax</strong> <span>From a direct row-wise implementation to online statistics, coalesced reads, and warp reductions.</span> <span class="chapter-card__link">Read the chapter →</span> </a></p>
+<p><a class="chapter-card" href="chapters/optimizing-layernorm.html"> <span class="chapter-card__eyebrow">Chapter 3 · Kernels</span> <strong>LayerNorm</strong> <span>From three global-memory reads to coalesced Welford statistics and a shared-memory row cache.</span> <span class="chapter-card__link">Read the chapter →</span> </a></p>
 
 
 </section>
@@ -642,8 +649,8 @@ ul.task-list li input[type="checkbox"] {
   <div class="nav-page nav-page-previous">
   </div>
   <div class="nav-page nav-page-next">
-      <a href="./chapters/making-gemv-fast.html" class="pagination-link" aria-label="Making GEMV Fast">
-        <span class="nav-page-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Making GEMV Fast</span></span> <i class="bi bi-arrow-right-short"></i>
+      <a href="./chapters/making-gemv-fast.html" class="pagination-link" aria-label="GEMV">
+        <span class="nav-page-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">GEMV</span></span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
+  <title id="title">LayerNorm across one row</title>
+  <desc id="desc">One row of five features is summarized by a mean and variance, standardized, and then scaled and shifted with gamma and beta.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e11d47"/>
+    </marker>
+    <style>
+      .ink{fill:#282828;font-family:Georgia,serif}.small{font-size:23px}.label{font-size:27px;font-weight:700}.box{fill:#fff;stroke:#282828;stroke-width:3}.accent{fill:#fff4f6;stroke:#e11d47;stroke-width:3}.arrow{stroke:#e11d47;stroke-width:4;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1200" height="470" fill="#fff"/>
+  <text class="ink label" x="55" y="62">one token / one row</text>
+  <g transform="translate(55 92)">
+    <rect class="box" x="0" y="0" width="105" height="68" rx="8"/><rect class="box" x="105" y="0" width="105" height="68" rx="8"/><rect class="box" x="210" y="0" width="105" height="68" rx="8"/><rect class="box" x="315" y="0" width="105" height="68" rx="8"/><rect class="box" x="420" y="0" width="105" height="68" rx="8"/>
+    <text class="ink small" x="37" y="43">x₀</text><text class="ink small" x="142" y="43">x₁</text><text class="ink small" x="247" y="43">x₂</text><text class="ink small" x="352" y="43">x₃</text><text class="ink small" x="457" y="43">x₄</text>
+  </g>
+  <path class="arrow" d="M600 126 C655 126 665 126 715 126"/>
+  <rect class="accent" x="735" y="74" width="400" height="108" rx="14"/>
+  <text class="ink label" x="820" y="118">row statistics</text>
+  <text class="ink small" x="806" y="155">mean μ, variance σ²</text>
+  <path class="arrow" d="M935 190 C935 230 935 245 935 275"/>
+  <rect class="accent" x="735" y="294" width="400" height="108" rx="14"/>
+  <text class="ink label" x="796" y="338">normalize + affine</text>
+  <text class="ink small" x="797" y="375">γᵢ (xᵢ − μ) / √(σ²+ε) + βᵢ</text>
+  <path class="arrow" d="M720 348 C645 348 630 348 566 348"/>
+  <g transform="translate(55 314)">
+    <rect class="box" x="0" y="0" width="105" height="68" rx="8"/><rect class="box" x="105" y="0" width="105" height="68" rx="8"/><rect class="box" x="210" y="0" width="105" height="68" rx="8"/><rect class="box" x="315" y="0" width="105" height="68" rx="8"/><rect class="box" x="420" y="0" width="105" height="68" rx="8"/>
+    <text class="ink small" x="37" y="43">y₀</text><text class="ink small" x="142" y="43">y₁</text><text class="ink small" x="247" y="43">y₂</text><text class="ink small" x="352" y="43">y₃</text><text class="ink small" x="457" y="43">y₄</text>
+  </g>
+  <text class="ink small" x="55" y="425">Every row has its own μ and σ². The learned γ and β are shared across rows.</text>
+</svg>
