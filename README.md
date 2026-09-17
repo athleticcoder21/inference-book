@@ -15,8 +15,9 @@ Quarto renders the complete book into `_book/`.
 
 ## Current chapters
 
-- [Making GEMV Fast](chapters/making-gemv-fast.qmd)
-- [Making Softmax Fast](chapters/optimizing-softmax.qmd)
+- [GEMV](chapters/making-gemv-fast.qmd)
+- [Softmax](chapters/optimizing-softmax.qmd)
+- [LayerNorm](chapters/optimizing-layernorm.qmd)
 
 ## CUDA implementations
 

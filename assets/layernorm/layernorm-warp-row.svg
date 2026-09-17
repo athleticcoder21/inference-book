@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">One warp cooperates on one LayerNorm row</title>
+  <desc id="desc">Lanes zero through three read adjacent columns on each pass through a teaching row of eight elements, produce local statistics, and merge those statistics.</desc>
+  <defs><style>.ink{fill:#282828;font-family:Georgia,serif}.head{font-size:29px;font-weight:700}.txt{font-size:22px}.cell{fill:#fff;stroke:#282828;stroke-width:3}.l0{fill:#fff1f2}.l1{fill:#fff7ed}.l2{fill:#f0fdf4}.l3{fill:#eff6ff}.stat{fill:#fff4f6;stroke:#e11d47;stroke-width:3}</style></defs>
+  <rect width="1200" height="500" fill="#fff"/>
+  <text class="ink head" x="55" y="60">teaching example: 4 lanes process an 8-element row</text>
+  <g transform="translate(55 95)">
+    <rect class="cell l0" x="0" y="0" width="130" height="75"/><rect class="cell l1" x="130" y="0" width="130" height="75"/><rect class="cell l2" x="260" y="0" width="130" height="75"/><rect class="cell l3" x="390" y="0" width="130" height="75"/>
+    <rect class="cell l0" x="520" y="0" width="130" height="75"/><rect class="cell l1" x="650" y="0" width="130" height="75"/><rect class="cell l2" x="780" y="0" width="130" height="75"/><rect class="cell l3" x="910" y="0" width="130" height="75"/>
+    <text class="ink txt" x="43" y="45">x₀</text><text class="ink txt" x="173" y="45">x₁</text><text class="ink txt" x="303" y="45">x₂</text><text class="ink txt" x="433" y="45">x₃</text><text class="ink txt" x="563" y="45">x₄</text><text class="ink txt" x="693" y="45">x₅</text><text class="ink txt" x="823" y="45">x₆</text><text class="ink txt" x="953" y="45">x₇</text>
+  </g>
+  <text class="ink txt" x="86" y="213">lane 0: x₀, x₄</text><text class="ink txt" x="344" y="213">lane 1: x₁, x₅</text><text class="ink txt" x="602" y="213">lane 2: x₂, x₆</text><text class="ink txt" x="860" y="213">lane 3: x₃, x₇</text>
+  <rect class="stat" x="68" y="245" width="220" height="98" rx="12"/><rect class="stat" x="326" y="245" width="220" height="98" rx="12"/><rect class="stat" x="584" y="245" width="220" height="98" rx="12"/><rect class="stat" x="842" y="245" width="220" height="98" rx="12"/>
+  <text class="ink txt" x="95" y="285">count₀, mean₀,</text><text class="ink txt" x="136" y="318">M2₀</text><text class="ink txt" x="353" y="285">count₁, mean₁,</text><text class="ink txt" x="394" y="318">M2₁</text><text class="ink txt" x="611" y="285">count₂, mean₂,</text><text class="ink txt" x="652" y="318">M2₂</text><text class="ink txt" x="869" y="285">count₃, mean₃,</text><text class="ink txt" x="910" y="318">M2₃</text>
+  <path d="M178 355 C250 430 440 430 505 355M694 355 C765 430 955 430 1025 355" fill="none" stroke="#e11d47" stroke-width="4"/>
+  <path d="M505 411 C560 462 640 462 694 411" fill="none" stroke="#e11d47" stroke-width="4"/>
+  <text class="ink head" x="412" y="482">merge pairs until one row state remains</text>
+</svg>

@@ -1,5 +1,5 @@
 ---
-title: "Making Softmax Fast"
+title: "Softmax"
 subtitle: "From a naive CUDA kernel to coalesced memory access"
 description: "A worklog on optimizing Softmax kernel in CUDA"
 date: 2026-09-11

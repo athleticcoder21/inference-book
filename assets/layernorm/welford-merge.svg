@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Combining two Welford states</title>
+  <desc id="desc">Two groups A and B, each represented by count, mean, and M2, are combined using a correction based on the distance between their means.</desc>
+  <defs><style>.ink{fill:#282828;font-family:Georgia,serif}.head{font-size:30px;font-weight:700}.txt{font-size:23px}.group{fill:#fff;stroke:#282828;stroke-width:3}.result{fill:#fff4f6;stroke:#e11d47;stroke-width:3}.line{stroke:#e11d47;stroke-width:4;fill:none}</style></defs>
+  <rect width="1200" height="500" fill="#fff"/>
+  <text class="ink head" x="55" y="58">a Welford state is a summary, not the original values</text>
+  <rect class="group" x="65" y="100" width="360" height="135" rx="14"/>
+  <text class="ink head" x="184" y="142">group A</text><text class="ink txt" x="118" y="190">(count nₐ, mean μₐ, M2ₐ)</text>
+  <rect class="group" x="775" y="100" width="360" height="135" rx="14"/>
+  <text class="ink head" x="894" y="142">group B</text><text class="ink txt" x="828" y="190">(count nᵦ, mean μᵦ, M2ᵦ)</text>
+  <path class="line" d="M425 168 C535 168 535 295 600 295"/><path class="line" d="M775 168 C665 168 665 295 600 295"/>
+  <rect class="result" x="255" y="300" width="690" height="145" rx="14"/>
+  <text class="ink head" x="477" y="342">combined state</text>
+  <text class="ink txt" x="302" y="385">n = nₐ + nᵦ,    δ = μᵦ − μₐ,    μ = μₐ + δ nᵦ/n</text>
+  <text class="ink txt" x="325" y="422">M2 = M2ₐ + M2ᵦ + δ² nₐnᵦ/n</text>
+  <text class="ink txt" x="55" y="483">The correction term accounts for the distance between the two group means.</text>
+</svg>

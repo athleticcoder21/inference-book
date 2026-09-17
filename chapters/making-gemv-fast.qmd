@@ -1,5 +1,5 @@
 ---
-title: "Making GEMV Fast"
+title: "GEMV"
 subtitle: "From a naïve CUDA kernel to coalesced memory access"
 description: "A worklog on optimizing matrix-vector multiplication in CUDA by reasoning about arithmetic intensity, memory transactions, and warp-level access patterns."
 date: 2026-09-10

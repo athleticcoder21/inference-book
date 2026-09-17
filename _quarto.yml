@@ -19,6 +19,7 @@ book:
       chapters:
         - chapters/making-gemv-fast.qmd
         - chapters/optimizing-softmax.qmd
+        - chapters/optimizing-layernorm.qmd
 
 format:
   html:

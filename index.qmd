@@ -1,7 +1,7 @@
 ---
 subtitle: "CUDA kernel worklogs for understanding inference performance"
 description: "A slowly growing book about reasoning through CUDA kernels from first principles."
-image: assets/gemv/image1-v2.png
+# image: assets/gemv/image1-v2.png
 ---
 
 # How to make your models fast {.unnumbered}
