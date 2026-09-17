@@ -8,10 +8,10 @@ and improve one bottleneck at a time.
 ## Read locally
 
 ```bash
-quarto preview
+bundle exec jekyll serve --baseurl ""
 ```
 
-Quarto renders the complete book into `_book/`.
+Jekyll renders the complete book into `_site/` using the Distill book theme.
 
 ## Current chapters
 

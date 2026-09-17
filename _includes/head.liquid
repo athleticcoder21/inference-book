@@ -68,7 +68,8 @@
     href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>{{ site.icon }}</text></svg>"
   >
 {% elsif site.icon != blank %}
-  <link rel="icon" href="{{ site.icon | prepend: '/assets/img/' | relative_url | bust_file_cache}}" sizes="48x48">
+  <link rel="icon" type="image/svg+xml" href="{{ site.icon | prepend: '/assets/img/' | relative_url | bust_file_cache}}">
+  <link rel="alternate icon" href="{{ '/assets/img/favicon.ico' | relative_url | bust_file_cache}}">
   <link rel="icon" type="image/png" href="{{ '/assets/img/favicon-96x96.png' | relative_url | bust_file_cache}}" sizes="96x96">
   <link rel="icon" type="image/png" href="{{ '/assets/img/favicon-192x192.png' | relative_url | bust_file_cache}}" sizes="192x192">
   <link rel="apple-touch-icon" href="{{ '/assets/img/apple-touch-icon.png' | relative_url | bust_file_cache}}">
