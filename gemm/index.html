@@ -1,0 +1,1569 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <!-- Metadata, OpenGraph and Schema.org -->
+
+
+
+
+<!-- Standard metadata -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>
+  
+  
+    
+      GEMM | How to make your models fast
+    
+  
+</title>
+<meta name="author" content=" ">
+<meta name="description" content="A worklog on optimizing matrix multiplication in CUDA by fixing thread ownership, reusing global-memory tiles in shared memory, and accumulating register micro-tiles.">
+
+  <meta name="keywords" content="cuda, gpu, kernels, llm, inference, performance optimization">
+
+
+
+
+
+
+  <!-- OpenGraph -->
+  <meta property="og:site_name" content="How to make your models fast">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="GEMM">
+  <meta property="og:url" content="https://athleticcoder21.github.io/inference-book/gemm/">
+  <meta property="og:description" content="A worklog on optimizing matrix multiplication in CUDA by fixing thread ownership, reusing global-memory tiles in shared memory, and accumulating register micro-tiles.">
+  
+    <meta property="og:image" content="https://athleticcoder21.github.io/inference-book/assets/gemv/image1-v2.png">
+  
+  <meta property="og:locale" content="en">
+
+  <!-- Twitter card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="GEMM">
+  <meta name="twitter:description" content="A worklog on optimizing matrix multiplication in CUDA by fixing thread ownership, reusing global-memory tiles in shared memory, and accumulating register micro-tiles.">
+  
+    <meta name="twitter:image" content="https://athleticcoder21.github.io/inference-book/assets/gemv/image1-v2.png">
+  
+  
+
+
+
+  <!-- Schema.org -->
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+  <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "url": "https://athleticcoder21.github.io/inference-book/gemm/",
+        "name": "How to make your models fast",
+        "headline": "GEMM",
+        
+        "description": "A worklog on optimizing matrix multiplication in CUDA by fixing thread ownership, reusing global-memory tiles in shared memory, and accumulating register micro-tiles."
+    }
+  </script>
+
+
+
+<!-- Bootstrap & MDB -->
+<link rel="stylesheet" href="/inference-book/assets/css/bootstrap.min.css?a4b3f509e79c54a512b890d73235ef04">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/css/mdb.min.css" integrity="sha256-jpjYvU3G3N6nrrBwXJoVEYI/0zw8htfFnhT9ljN3JJw=" crossorigin="anonymous">
+
+
+
+<!-- Fonts & Icons -->
+<!-- Roboto is self-hosted (see _sass/_fonts.scss). Preload it so it's ready at
+     first paint; with font-display: optional a late font is skipped rather than
+     swapped in, so the page never reflows because of fonts. -->
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/inference-book/assets/fonts/roboto/roboto-latin.woff2">
+<link defer rel="stylesheet" href="/inference-book/assets/css/academicons.min.css?f0b7046b84e425c55f3463ac249818f5">
+<link defer rel="stylesheet" href="/inference-book/assets/css/scholar-icons.css?62b2ac103a88034e6882a5be5f3e2772">
+
+<!-- Code Syntax Highlighting -->
+<link defer rel="stylesheet" href="/inference-book/assets/css/jekyll-pygments-themes-vs.css?4ee1a2facd1a8a76347f4bd43a740500" media="" id="highlight_theme_light">
+
+
+
+<!-- Styles -->
+
+
+
+
+  <link rel="icon" type="image/svg+xml" href="/inference-book/assets/img/omnitrix.svg?7486b7f95f359e8a03d5943d732d4e6a">
+  <link rel="alternate icon" href="/inference-book/assets/img/favicon.ico?2588793a320796e7c656ecd3e63e275b">
+  <link rel="icon" type="image/png" href="/inference-book/assets/img/favicon-96x96.png?db4854e6e5b2f2bd5eeb534574ed9972" sizes="96x96">
+  <link rel="icon" type="image/png" href="/inference-book/assets/img/favicon-192x192.png?9e8e4da98d881b893dfa39341096a022" sizes="192x192">
+  <link rel="apple-touch-icon" href="/inference-book/assets/img/apple-touch-icon.png?eed4a6b8deef431052abb8bdaa437d39">
+
+<link rel="stylesheet" href="/inference-book/assets/css/main.css?d41d8cd98f00b204e9800998ecf8427e">
+<link rel="canonical" href="https://athleticcoder21.github.io/inference-book/gemm/">
+
+<!-- Dark Mode -->
+<script src="/inference-book/assets/js/theme.js?9a0c749ec5240d9cda97bc72359a72c0"></script>
+
+  <link defer rel="stylesheet" href="/inference-book/assets/css/jekyll-pygments-themes-native.css?5847e5ed4a4568527aa6cfab446049ca" media="none" id="highlight_theme_dark">
+  <script>
+    initTheme();
+  </script>
+
+
+<!-- Set Tufte-mode class before first paint to avoid layout flicker -->
+<script>
+  try {
+    if (localStorage.getItem("tufte-sidenotes-enabled") === "1") {
+      document.documentElement.classList.add("tufte-mode");
+    }
+  } catch (e) {}
+</script>
+
+
+
+
+
+
+
+
+
+
+  <!-- Distill js -->
+  <script src="/inference-book/assets/js/distillpub/template.v2.js"></script>
+  <script src="/inference-book/assets/js/distillpub/transforms.v2.js"></script>
+  
+</head>
+
+<body>
+<d-front-matter>
+  <script async type="text/json">
+      {
+            "title": "GEMM",
+            "description": "A worklog on optimizing matrix multiplication in CUDA by fixing thread ownership, reusing global-memory tiles in shared memory, and accumulating register micro-tiles.",
+            "published": "September 18, 2026",
+            "authors": [
+              
+              {
+                "author": "Anshuman Mishra",
+                "authorURL": "https://heyyanshuman.com",
+                "affiliations": [
+                  {
+                    "name": "Independent researcher",
+                    "url": ""
+                  }
+                ]
+              }
+              
+            ],
+            "katex": {
+              "delimiters": [
+                {
+                  "left": "$",
+                  "right": "$",
+                  "display": false
+                },
+                {
+                  "left": "$$",
+                  "right": "$$",
+                  "display": true
+                }
+              ]
+            }
+          }
+    </script>
+</d-front-matter>
+
+
+  <!-- Header -->
+  <header>
+
+  <script>
+    function goToTop() {
+      document.body.scrollTop = 0; // For Safari
+      document.documentElement.scrollTop = 0; // For Chrome, Firefox, IE and Opera
+    }
+
+    // When the user scrolls down 20px from the top of the document, show the button
+    window.onscroll = function() {scrollFunction()};
+
+    function scrollFunction() {
+      // Get the button:
+      let mybutton = document.getElementById("top-button");
+      if (!mybutton) return;
+
+      if (document.body.scrollTop > 40 || document.documentElement.scrollTop > 40) {
+        mybutton.style.display = "block";
+      } else {
+        mybutton.style.display = "none";
+      }
+  }
+  </script>
+
+  <!-- Nav Bar -->
+  <nav id="navbar" class="navbar navbar-light navbar-expand-sm fixed-top" role="navigation">
+    <div class="container">
+      
+        <a class="navbar-brand title font-weight-lighter" href="/inference-book">
+          How to make your models fast
+        </a>
+      
+      <!-- Navbar Toggle -->
+      <button class="navbar-toggler collapsed ml-auto" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="sr-only">Toggle navigation</span>
+        <span class="icon-bar top-bar"></span>
+        <span class="icon-bar middle-bar"></span>
+        <span class="icon-bar bottom-bar"></span>
+      </button>
+
+      <div class="left-button section-button"><a href="../layernorm"><svg viewbox="-78.5 0 512 512"><path d="M257 64L291 98 128 262 291 426 257 460 61 262 257 64Z"></path></svg></a></div>
+      <div class="right-button section-button"><a href="../index"><svg viewbox="-78.5 0 512 512"><path d="M98 460L64 426 227 262 64 98 98 64 294 262 98 460Z"></path></svg></a></div>
+
+      <div class="collapse navbar-collapse text-right" id="navbarNav">
+
+        <ul class="navbar-nav ml-auto flex-nowrap">
+          
+
+          <!-- About -->
+          <li class="nav-item ">
+            <a class="nav-link" href="/inference-book/">
+              
+            </a>
+          </li>
+
+      <li class="nav-item nav-hidden"><a class="nav-link" href="../layernorm">Previous Part</a></li>
+
+      <li class="nav-item nav-hidden"><a class="nav-link" href="../index">Next Part</a></li>
+ 
+          <!-- Other pages -->
+          
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+              
+                
+                
+                <li class="nav-item dropdown active">
+                  <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    <i class="ti ti-list dropdown-icon"></i>
+                    <span class="dropdown-text">Sections</span>
+                    
+                      <span class="sr-only">(current)</span>
+                    
+                  </a>
+                  <div class="dropdown-menu dropdown-menu-right" aria-labelledby="navbarDropdown">
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/index">Introduction</a>
+                      
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/gemv">GEMV</a>
+                      
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/softmax">Softmax</a>
+                      
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/layernorm">LayerNorm</a>
+                      
+                    
+                      
+                        <a class="dropdown-item active" href="/inference-book/gemm">GEMM</a>
+                      
+                    
+                  </div>
+                </li>
+              
+            
+          
+          
+          
+            <!-- Toogle theme mode -->
+            <li class="toggle-container">
+              <!-- Inline SVGs (Tabler Icons) rather than the tabler-icons webfont so the
+                   icon is visible at first paint instead of popping in when the font loads. -->
+              <button id="light-toggle" title="Change theme">
+                <svg id="light-toggle-system" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.173 14.83a4 4 0 1 1 5.657 -5.657"></path><path d="M11.294 12.707l.174 .247a7.5 7.5 0 0 0 8.845 2.492a9 9 0 0 1 -14.671 2.914"></path><path d="M3 12h1"></path><path d="M12 3v1"></path><path d="M5.6 5.6l.7 .7"></path><path d="M3 21l18 -18"></path></svg>
+                <svg id="light-toggle-dark" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewbox="0 0 24 24" fill="currentColor"><path d="M12 1.992a10 10 0 1 0 9.236 13.838c.341 -.82 -.476 -1.644 -1.298 -1.31a6.5 6.5 0 0 1 -6.864 -10.787l.077 -.08c.551 -.63 .113 -1.653 -.758 -1.653h-.266l-.068 -.006l-.06 -.002z"></path></svg>
+                <svg id="light-toggle-light" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewbox="0 0 24 24" fill="currentColor"><path d="M12 19a1 1 0 0 1 .993 .883l.007 .117v1a1 1 0 0 1 -1.993 .117l-.007 -.117v-1a1 1 0 0 1 1 -1z"></path><path d="M18.313 16.91l.094 .083l.7 .7a1 1 0 0 1 -1.32 1.497l-.094 -.083l-.7 -.7a1 1 0 0 1 1.218 -1.567l.102 .07z"></path><path d="M7.007 16.993a1 1 0 0 1 .083 1.32l-.083 .094l-.7 .7a1 1 0 0 1 -1.497 -1.32l.083 -.094l.7 -.7a1 1 0 0 1 1.414 0z"></path><path d="M4 11a1 1 0 0 1 .117 1.993l-.117 .007h-1a1 1 0 0 1 -.117 -1.993l.117 -.007h1z"></path><path d="M21 11a1 1 0 0 1 .117 1.993l-.117 .007h-1a1 1 0 0 1 -.117 -1.993l.117 -.007h1z"></path><path d="M6.213 4.81l.094 .083l.7 .7a1 1 0 0 1 -1.32 1.497l-.094 -.083l-.7 -.7a1 1 0 0 1 1.217 -1.567l.102 .07z"></path><path d="M19.107 4.893a1 1 0 0 1 .083 1.32l-.083 .094l-.7 .7a1 1 0 0 1 -1.497 -1.32l.083 -.094l.7 -.7a1 1 0 0 1 1.414 0z"></path><path d="M12 2a1 1 0 0 1 .993 .883l.007 .117v1a1 1 0 0 1 -1.993 .117l-.007 -.117v-1a1 1 0 0 1 1 -1z"></path><path d="M12 7a5 5 0 1 1 -4.995 5.217l-.005 -.217l.005 -.217a5 5 0 0 1 4.995 -4.783z"></path></svg>
+              </button>
+            </li>
+          
+        </ul>
+      </div>
+    </div>
+  </nav>
+  
+    <!-- Scrolling Progress Bar -->
+    <progress id="progress" value="0">
+      <div class="progress-container">
+        <span class="progress-bar"></span>
+      </div>
+    </progress>
+  
+</header>
+
+
+  <!-- Content -->
+  <div class="post distill">
+
+    <d-title>
+      <h1>GEMM</h1>
+      
+      <p>Part 4 of <a href="/inference-book">How to make your models fast</a> (<a href="../layernorm">LayerNorm</a> | <a href="../index">Introduction</a>)</p>
+      
+      <p>A worklog on optimizing matrix multiplication in CUDA by fixing thread ownership, reusing global-memory tiles in shared memory, and accumulating register micro-tiles.</p>
+    </d-title>
+
+    
+    <!-- Pre-render the byline server-side so it's visible at first paint. The distill JS
+         re-renders it from <d-front-matter> on DOMContentLoaded, so the markup here must
+         mirror bylineTemplate() in assets/js/distillpub/template.v2.js exactly. -->
+    
+    <d-byline>
+      <div class="byline grid">
+        <div class="authors-affiliations grid">
+          <h3 style="grid-column: 1; grid-row: 1;">Authors</h3>
+          <h3></h3>
+          <h3>Affiliation</h3>
+          
+          
+          
+          <p class="author" style="grid-column: 1; grid-row: 2;">
+            <a class="name" href="https://heyyanshuman.com" rel="external nofollow noopener" target="_blank">Anshuman Mishra</a>
+          </p>
+          <p class="affiliation" style="grid-column: 3; grid-row: 2;">
+            <span class="affiliation">Independent researcher</span>
+          </p>
+          
+        </div>
+        <div>
+          <h3>Published</h3>
+          <!-- Match the AP-style month abbreviations in template.v2.js's `months` array. -->
+          
+          
+          <p>Sept. 18, 2026</p>
+        </div>
+      </div>
+    </d-byline>
+    
+
+    <d-article>
+      
+      <d-contents>
+        <nav class="l-text figcaption">
+          <h3>Contents</h3>
+          
+          <div>
+            <a href="#how-much-work-does-gemm-perform">How much work does GEMM perform?</a>
+          </div>
+          
+          <ul>
+            
+            <li>
+              <a href="#the-best-case-traffic">The best-case traffic</a>
+            </li>
+            
+          </ul>
+          
+          
+          <div>
+            <a href="#one-thread-per-output">One thread per output</a>
+          </div>
+          
+          <ul>
+            
+            <li>
+              <a href="#a-bad-ownership-choice">A bad ownership choice</a>
+            </li>
+            
+            <li>
+              <a href="#let-x-mean-column">Let x mean column</a>
+            </li>
+            
+            <li>
+              <a href="#cost-of-the-direct-kernel">Cost of the direct kernel</a>
+            </li>
+            
+          </ul>
+          
+          
+          <div>
+            <a href="#one-block-per-output-tile">One block per output tile</a>
+          </div>
+          
+          <ul>
+            
+            <li>
+              <a href="#a-four-by-four-example">A four-by-four example</a>
+            </li>
+            
+            <li>
+              <a href="#where-the-reuse-comes-from">Where the reuse comes from</a>
+            </li>
+            
+            <li>
+              <a href="#turning-tiling-into-code">Turning tiling into code</a>
+            </li>
+            
+          </ul>
+          
+          
+          <div>
+            <a href="#more-than-one-output-per-thread">More than one output per thread</a>
+          </div>
+          
+          <ul>
+            
+            <li>
+              <a href="#one-dimensional-register-tiling">One-dimensional register tiling</a>
+            </li>
+            
+            <li>
+              <a href="#two-dimensional-register-tiling">Two-dimensional register tiling</a>
+            </li>
+            
+            <li>
+              <a href="#the-complete-2d-register-tiled-schedule">The complete 2D register-tiled schedule</a>
+            </li>
+            
+          </ul>
+          
+          
+          <div>
+            <a href="#vectorizing-the-tile-loads">Vectorizing the tile loads</a>
+          </div>
+          
+          
+          <div>
+            <a href="#what-each-optimization-changed">What each optimization changed</a>
+          </div>
+          
+          
+          <div>
+            <a href="#what-we-should-benchmark">What we should benchmark</a>
+          </div>
+          
+          
+          <div>
+            <a href="#main-takeaways">Main takeaways</a>
+          </div>
+          
+          
+        </nav>
+      </d-contents>
+      
+      <p>The code for this chapter lives in <a href="https://github.com/athleticcoder21/inference-book/tree/main/kernels/gemm" rel="external nofollow noopener" target="_blank"><code class="language-plaintext highlighter-rouge">kernels/gemm/</code></a>.</p>
+
+<p>GEMM means <strong>GEneral Matrix-Matrix multiplication</strong>. Given</p>
+
+\[\mathbf{A}\in\mathbb{R}^{M\times K},
+\qquad
+\mathbf{B}\in\mathbb{R}^{K\times N},\]
+
+<p>we want to calculate</p>
+
+\[\mathbf{C}_{M\times N}
+  =\mathbf{A}_{M\times K}\mathbf{B}_{K\times N}.\]
+
+<p>Every output element is the dot product of one row of $\mathbf{A}$ and one
+column of $\mathbf{B}$:</p>
+
+\[C_{i,j}=\sum_{k=0}^{K-1}A_{i,k}B_{k,j}.\]
+
+<figure>
+  
+  <picture>
+    <!-- Auto scaling with imagemagick -->
+    <!--
+      See https://www.debugbear.com/blog/responsive-images#w-descriptors-and-the-sizes-attribute and
+      https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images for info on defining 'sizes' for responsive images
+    -->
+    
+    <img src="/inference-book/assets/gemm/gemm-overview.svg" class="img-fluid" width="100%" height="auto" alt="An M by K matrix A multiplied by a K by N matrix B to produce an M by N matrix C. One row of A and one column of B are highlighted because their dot product produces one highlighted output element." loading="lazy" onerror="this.onerror=null; $('.responsive-img-srcset').remove();">
+  </picture>
+  
+  
+</figure>
+
+<p>This equation looks like GEMV repeated for every column of $\mathbf{B}$, but
+that extra matrix changes the optimization problem. In GEMV, an element of the
+matrix is useful for one output dot product. In GEMM, one value from
+$\mathbf{A}$ can contribute to many columns of $\mathbf{C}$, while one value
+from $\mathbf{B}$ can contribute to many rows. If we keep those values close to
+the processors, the same load can feed many multiply-adds.</p>
+
+<p>That reuse is why GEMM powers the large linear layers used during prompt
+processing and training. It is also why this chapter will feel different from
+GEMV, Softmax, and LayerNorm. Those kernels made progress mainly by moving
+fewer bytes. GEMM must also arrange enough independent arithmetic to keep the
+floating-point pipelines busy.</p>
+
+<aside class="callout"><strong>Why this chapter uses FP32</strong>
+
+The kernels below use FP32 so that the change from one version to the next is
+about work ownership and data movement, not a simultaneous change of datatype
+or execution unit. FP16 and BF16 reduce operand traffic, and tensor cores
+change how the multiply-accumulate itself is issued. They build on the same
+tiling hierarchy, but deserve a separate treatment.
+
+</aside>
+
+<p>Before touching CUDA, let us write the complete calculation:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>for row = 0 to M - 1:
+    for column = 0 to N - 1:
+        sum = 0
+
+        for inner = 0 to K - 1:
+            sum += A[row, inner] * B[inner, column]
+
+        C[row, column] = sum
+</code></pre></div></div>
+
+<p>There are $MN$ independent output elements. The first kernel will expose all
+of that parallelism by assigning one output element to one thread.</p>
+
+<h2 id="how-much-work-does-gemm-perform">How much work does GEMM perform?</h2>
+
+<p>Each output dot product contains $K$ multiplications and $K-1$ additions.
+Across all $MN$ outputs, the exact ordinary floating-point work is</p>
+
+\[MN\left(K+(K-1)\right)
+  =2MNK-MN \quad \text{FLOPs}.\]
+
+<p>On a GPU, the multiply and addition are normally emitted as a fused
+multiply-add. One FMA is one instruction, but it still represents two
+floating-point operations. For large $K$, we therefore use the familiar
+approximation</p>
+
+\[\text{work}\approx2MNK \quad \text{FLOPs}.\]
+
+<h3 id="the-best-case-traffic">The best-case traffic</h3>
+
+<p>Assume FP32, so every element occupies 4 bytes. If each input matrix could be
+read exactly once and the result written exactly once, the traffic would be</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Operation</th>
+      <th style="text-align: right">Elements transferred</th>
+      <th style="text-align: right">Bytes transferred</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Read $\mathbf{A}$</td>
+      <td style="text-align: right">$MK$</td>
+      <td style="text-align: right">$4MK$</td>
+    </tr>
+    <tr>
+      <td>Read $\mathbf{B}$</td>
+      <td style="text-align: right">$KN$</td>
+      <td style="text-align: right">$4KN$</td>
+    </tr>
+    <tr>
+      <td>Write $\mathbf{C}$</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td><strong>Total</strong></td>
+      <td style="text-align: right"><strong>$MK+KN+MN$</strong></td>
+      <td style="text-align: right"><strong>$4(MK+KN+MN)$</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The corresponding arithmetic intensity is</p>
+
+\[AI_{\text{ideal}}(M,N,K)
+  =\frac{2MNK-MN}{4(MK+KN+MN)}
+  \quad \text{FLOPs/byte}.\]
+
+<p>For a square multiplication with $M=N=K=L$,</p>
+
+\[AI_{\text{ideal}}(L)
+  =\frac{2L^3-L^2}{12L^2}
+  =\frac{2L-1}{12}
+  \approx\frac{L}{6}
+  \quad \text{FLOPs/byte}.\]
+
+<p>Unlike GEMV’s intensity of roughly $0.5$ FLOPs/byte, this value grows with the
+matrix size. A $4096\times4096$ square GEMM has an ideal FP32 intensity of
+roughly $683$ FLOPs/byte.</p>
+
+<p>There is one important word in that calculation: <strong>ideal</strong>. The equation only
+counts each matrix element once. A direct kernel asks for the same values many
+times. Caches may satisfy some of those requests, but the kernel itself has not
+created a place where a block of threads can deliberately reuse the data.</p>
+
+<p>We will keep two traffic models separate throughout this chapter:</p>
+
+<ul>
+  <li>
+    <p><strong>Algorithmic traffic</strong> counts the minimum useful data: one read of each
+input and one write of the output.</p>
+  </li>
+  <li>
+    <p><strong>Kernel-issued traffic</strong> counts the loads and stores requested by a
+particular implementation before making assumptions about cache hits.</p>
+  </li>
+</ul>
+
+<p>The first number explains GEMM’s potential. The second explains why a naive
+kernel can be slow despite that potential.</p>
+
+<h2 id="one-thread-per-output">One thread per output</h2>
+
+<p>The simplest parallel mapping gives one element of $\mathbf{C}$ to one CUDA
+thread. That thread walks across one row of $\mathbf{A}$ and down one column of
+$\mathbf{B}$.</p>
+
+<p>The two output coordinates are independent, so a 2D thread block feels
+natural. But there is a trap: CUDA forms warps by linearizing the block with
+<code class="language-plaintext highlighter-rouge">threadIdx.x</code> changing fastest. The meaning we attach to the x-coordinate
+therefore changes which output elements neighboring lanes own.</p>
+
+<h3 id="a-bad-ownership-choice">A bad ownership choice</h3>
+
+<p>Suppose <code class="language-plaintext highlighter-rouge">threadIdx.x</code> selects the output row and <code class="language-plaintext highlighter-rouge">threadIdx.y</code> selects the
+output column:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="n">row</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">y</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">x</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span>
+<span class="kt">int</span> <span class="n">column</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">y</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">y</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>For a block whose x-dimension is 32, the first warp has a fixed
+<code class="language-plaintext highlighter-rouge">threadIdx.y = 0</code> and <code class="language-plaintext highlighter-rouge">threadIdx.x = 0,1,...,31</code>. At one inner-loop iteration,
+its addresses are</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>lane 0  -&gt; A[(row + 0)  * K + inner]   B[inner * N + column]
+lane 1  -&gt; A[(row + 1)  * K + inner]   B[inner * N + column]
+lane 2  -&gt; A[(row + 2)  * K + inner]   B[inner * N + column]
+...
+lane 31 -&gt; A[(row + 31) * K + inner]   B[inner * N + column]
+</code></pre></div></div>
+
+<p>All lanes request the same value from $\mathbf{B}$, which can be broadcast.
+But their $\mathbf{A}$ values are $K$ floats apart, and their final
+$\mathbf{C}$ stores are $N$ floats apart. For large matrices, one warp scatters
+both its matrix loads and its output stores across memory.</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__global__</span> <span class="kt">void</span> <span class="nf">row_first_gemm_kernel</span><span class="p">(</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">A</span><span class="p">,</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">B</span><span class="p">,</span>
+    <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">C</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">M</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">N</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">K</span>
+<span class="p">)</span> <span class="p">{</span>
+    <span class="kt">int</span> <span class="n">row</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">y</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">x</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">column</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">y</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">y</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">row</span> <span class="o">&gt;=</span> <span class="n">M</span> <span class="o">||</span> <span class="n">column</span> <span class="o">&gt;=</span> <span class="n">N</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="kt">float</span> <span class="n">sum</span> <span class="o">=</span> <span class="mf">0.0f</span><span class="p">;</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">inner</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">inner</span> <span class="o">&lt;</span> <span class="n">K</span><span class="p">;</span> <span class="o">++</span><span class="n">inner</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">sum</span> <span class="o">+=</span> <span class="n">A</span><span class="p">[</span><span class="n">row</span> <span class="o">*</span> <span class="n">K</span> <span class="o">+</span> <span class="n">inner</span><span class="p">]</span> <span class="o">*</span> <span class="n">B</span><span class="p">[</span><span class="n">inner</span> <span class="o">*</span> <span class="n">N</span> <span class="o">+</span> <span class="n">column</span><span class="p">];</span>
+    <span class="p">}</span>
+
+    <span class="n">C</span><span class="p">[</span><span class="n">row</span> <span class="o">*</span> <span class="n">N</span> <span class="o">+</span> <span class="n">column</span><span class="p">]</span> <span class="o">=</span> <span class="n">sum</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>The arithmetic is correct. The ownership is not friendly to the way a warp
+moves data.</p>
+
+<h3 id="let-x-mean-column">Let x mean column</h3>
+
+<p>Now swap the meaning of the thread coordinates:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="n">column</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">x</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span>
+<span class="kt">int</span> <span class="n">row</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">y</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">y</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">y</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>With <code class="language-plaintext highlighter-rouge">blockDim.x = 32</code>, one warp owns 32 consecutive columns from the same
+output row. At inner-loop position $k$, lane $l$ reads</p>
+
+\[A_{i,k}
+\qquad\text{and}\qquad
+B_{k,j+l}.\]
+
+<p>The $\mathbf{A}$ address is identical across the warp, while the
+$\mathbf{B}$ addresses are consecutive. The output stores are consecutive as
+well:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>lane 0  -&gt; A[row, inner]  B[inner, column + 0]  C[row, column + 0]
+lane 1  -&gt; A[row, inner]  B[inner, column + 1]  C[row, column + 1]
+lane 2  -&gt; A[row, inner]  B[inner, column + 2]  C[row, column + 2]
+...
+lane 31 -&gt; A[row, inner]  B[inner, column + 31] C[row, column + 31]
+</code></pre></div></div>
+
+<p>One change in ownership turns the $\mathbf{B}$ loads and $\mathbf{C}$ stores
+into coalesced accesses.</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__global__</span> <span class="kt">void</span> <span class="nf">coalesced_gemm_kernel</span><span class="p">(</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">A</span><span class="p">,</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">B</span><span class="p">,</span>
+    <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">C</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">M</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">N</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">K</span>
+<span class="p">)</span> <span class="p">{</span>
+    <span class="kt">int</span> <span class="n">column</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">x</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">row</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">y</span> <span class="o">*</span> <span class="n">blockDim</span><span class="p">.</span><span class="n">y</span> <span class="o">+</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">y</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">row</span> <span class="o">&gt;=</span> <span class="n">M</span> <span class="o">||</span> <span class="n">column</span> <span class="o">&gt;=</span> <span class="n">N</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="kt">float</span> <span class="n">sum</span> <span class="o">=</span> <span class="mf">0.0f</span><span class="p">;</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">inner</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">inner</span> <span class="o">&lt;</span> <span class="n">K</span><span class="p">;</span> <span class="o">++</span><span class="n">inner</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">sum</span> <span class="o">+=</span> <span class="n">A</span><span class="p">[</span><span class="n">row</span> <span class="o">*</span> <span class="n">K</span> <span class="o">+</span> <span class="n">inner</span><span class="p">]</span> <span class="o">*</span> <span class="n">B</span><span class="p">[</span><span class="n">inner</span> <span class="o">*</span> <span class="n">N</span> <span class="o">+</span> <span class="n">column</span><span class="p">];</span>
+    <span class="p">}</span>
+
+    <span class="n">C</span><span class="p">[</span><span class="n">row</span> <span class="o">*</span> <span class="n">N</span> <span class="o">+</span> <span class="n">column</span><span class="p">]</span> <span class="o">=</span> <span class="n">sum</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<aside class="callout"><strong>Coalesced does not mean reused</strong>
+
+The remapped kernel makes each warp's requests efficient, but every output
+thread still issues $K$ loads from $\mathbf{A}$ and $K$ loads from
+$\mathbf{B}$. Coalescing changes how those requests are served. It does not
+remove the repeated requests.
+
+</aside>
+
+<h3 id="cost-of-the-direct-kernel">Cost of the direct kernel</h3>
+
+<p>There are $MN$ output threads. Each one requests $K$ values from
+$\mathbf{A}$, $K$ values from $\mathbf{B}$, and writes one result:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Operation</th>
+      <th style="text-align: right">Elements requested</th>
+      <th style="text-align: right">Bytes requested</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Read $\mathbf{A}$</td>
+      <td style="text-align: right">$MNK$</td>
+      <td style="text-align: right">$4MNK$</td>
+    </tr>
+    <tr>
+      <td>Read $\mathbf{B}$</td>
+      <td style="text-align: right">$MNK$</td>
+      <td style="text-align: right">$4MNK$</td>
+    </tr>
+    <tr>
+      <td>Write $\mathbf{C}$</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td><strong>Total</strong></td>
+      <td style="text-align: right"><strong>$2MNK+MN$</strong></td>
+      <td style="text-align: right"><strong>$4(2MNK+MN)$</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Ignoring cache reuse, its arithmetic intensity is</p>
+
+\[\begin{aligned}
+AI_{\text{direct}}
+  &amp;=\frac{2MNK-MN}{4(2MNK+MN)}\\
+  &amp;=\frac{2K-1}{4(2K+1)}
+  \approx\frac{1}{4}
+  \quad \text{FLOPs/byte}.
+\end{aligned}\]
+
+<p>So the same mathematical GEMM that had an ideal intensity growing with matrix
+size now looks like a low-intensity kernel. The difference is reuse. The
+algorithm says that $A_{i,k}$ is useful for every output column, but the kernel
+asks for it again from every output thread.</p>
+
+<p>The cache can rescue nearby threads that request the same line. We should be
+glad when it does. We should not make the whole kernel depend on that rescue.</p>
+
+<h2 id="one-block-per-output-tile">One block per output tile</h2>
+
+<p>The direct kernel finishes one output at a time. A tiled kernel changes the
+unit of ownership: one thread block owns a rectangular tile of
+$\mathbf{C}$.</p>
+
+<p>Assume for now that the output tile is $T\times T$. The block cannot calculate
+that tile in one step because each dot product has length $K$. It therefore
+walks across the inner dimension in chunks of width $T$:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>for each T-wide slice along K:
+    load one T x T tile from A into shared memory
+    load one T x T tile from B into shared memory
+    synchronize
+
+    multiply the two shared-memory tiles
+    add the partial result to the accumulator
+    synchronize
+
+write the finished C tile
+</code></pre></div></div>
+
+<figure>
+  
+  <picture>
+    <!-- Auto scaling with imagemagick -->
+    <!--
+      See https://www.debugbear.com/blog/responsive-images#w-descriptors-and-the-sizes-attribute and
+      https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images for info on defining 'sizes' for responsive images
+    -->
+    
+    <img src="/inference-book/assets/gemm/gemm-tiling.svg" class="img-fluid" width="100%" height="auto" alt="A block computes one tile of C by repeatedly loading a horizontal tile from A and a vertical tile from B along the K dimension. Each pair of input tiles contributes a partial product to the same output tile." loading="lazy" onerror="this.onerror=null; $('.responsive-img-srcset').remove();">
+  </picture>
+  
+  
+</figure>
+
+<p>The first barrier ensures that the complete input tiles are available before
+any thread reads them. The second ensures that every thread has finished using
+the current tiles before the block overwrites shared memory with the next
+pair.</p>
+
+<h3 id="a-four-by-four-example">A four-by-four example</h3>
+
+<p>Use $T=2$ for a small matrix:</p>
+
+\[\mathbf{A}=
+\begin{bmatrix}
+a_{00}&amp;a_{01}&amp;a_{02}&amp;a_{03}\\
+a_{10}&amp;a_{11}&amp;a_{12}&amp;a_{13}\\
+a_{20}&amp;a_{21}&amp;a_{22}&amp;a_{23}\\
+a_{30}&amp;a_{31}&amp;a_{32}&amp;a_{33}
+\end{bmatrix},
+\qquad
+\mathbf{B}=
+\begin{bmatrix}
+b_{00}&amp;b_{01}&amp;b_{02}&amp;b_{03}\\
+b_{10}&amp;b_{11}&amp;b_{12}&amp;b_{13}\\
+b_{20}&amp;b_{21}&amp;b_{22}&amp;b_{23}\\
+b_{30}&amp;b_{31}&amp;b_{32}&amp;b_{33}
+\end{bmatrix}.\]
+
+<p>To produce the top-left $2\times2$ tile of $\mathbf{C}$, the block first loads</p>
+
+\[\mathbf{A}^{(0)}=
+\begin{bmatrix}
+a_{00}&amp;a_{01}\\
+a_{10}&amp;a_{11}
+\end{bmatrix},
+\qquad
+\mathbf{B}^{(0)}=
+\begin{bmatrix}
+b_{00}&amp;b_{01}\\
+b_{10}&amp;b_{11}
+\end{bmatrix}.\]
+
+<p>Their product is only the first contribution:</p>
+
+\[\mathbf{C}_{0:2,0:2}
+  \mathrel{+}=\mathbf{A}^{(0)}\mathbf{B}^{(0)}.\]
+
+<p>The block then advances two positions along $K$ and loads</p>
+
+\[\mathbf{A}^{(1)}=
+\begin{bmatrix}
+a_{02}&amp;a_{03}\\
+a_{12}&amp;a_{13}
+\end{bmatrix},
+\qquad
+\mathbf{B}^{(1)}=
+\begin{bmatrix}
+b_{20}&amp;b_{21}\\
+b_{30}&amp;b_{31}
+\end{bmatrix}.\]
+
+<p>After</p>
+
+\[\mathbf{C}_{0:2,0:2}
+  \mathrel{+}=\mathbf{A}^{(1)}\mathbf{B}^{(1)},\]
+
+<p>the four accumulators contain the finished output tile. Nothing is written to
+global memory until all $K/T$ partial products have been accumulated.</p>
+
+<h3 id="where-the-reuse-comes-from">Where the reuse comes from</h3>
+
+<p>During one tile iteration, the block loads</p>
+
+\[T^2+T^2=2T^2\]
+
+<p>values from global memory. It then performs $T^3$ FMAs, because there are
+$T^2$ output elements and each receives $T$ multiply-adds.</p>
+
+<p>Each $\mathbf{A}$ value is used by $T$ output columns. Each $\mathbf{B}$ value
+is used by $T$ output rows. The input tiles cross global memory once, then
+shared memory distributes them to all the threads that need them.</p>
+
+<p>For FP32, the arithmetic intensity of one tile multiplication, ignoring the
+eventual output store, is</p>
+
+\[\begin{aligned}
+AI_{\text{tile}}
+  &amp;=\frac{2T^3}{4(2T^2)}\\
+  &amp;=\frac{T}{4}
+  \quad \text{FLOPs/byte}.
+\end{aligned}\]
+
+<p>The direct kernel approached $0.25$ FLOPs/byte before cache effects. A tile of
+width 16 gives $4$ FLOPs/byte at the global-memory boundary, while a tile of
+width 32 gives $8$ FLOPs/byte.</p>
+
+<p>For rectangular block tiles of shape $B_M\times B_N$ and an inner tile width
+$B_K$, the same calculation becomes</p>
+
+\[AI_{\text{tile}}
+  =\frac{2B_MB_NB_K}
+         {4(B_MB_K+B_KB_N)}
+  =\frac{B_MB_N}{2(B_M+B_N)}.\]
+
+<p>Notice that $B_K$ cancels. Increasing $B_K$ changes loop overhead, shared
+memory use, and synchronization frequency, but it does not change the reuse
+factor by itself.</p>
+
+<h3 id="turning-tiling-into-code">Turning tiling into code</h3>
+
+<p>For the first tiled kernel, use a $16\times16$ block. Every thread loads one
+value into each shared-memory tile and computes one output element:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">template</span> <span class="o">&lt;</span><span class="kt">int</span> <span class="n">tile_size</span><span class="p">&gt;</span>
+<span class="n">__global__</span> <span class="kt">void</span> <span class="nf">tiled_gemm_kernel</span><span class="p">(</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">A</span><span class="p">,</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">B</span><span class="p">,</span>
+    <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">C</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">M</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">N</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">K</span>
+<span class="p">)</span> <span class="p">{</span>
+    <span class="n">__shared__</span> <span class="kt">float</span> <span class="n">A_tile</span><span class="p">[</span><span class="n">tile_size</span><span class="p">][</span><span class="n">tile_size</span><span class="p">];</span>
+    <span class="n">__shared__</span> <span class="kt">float</span> <span class="n">B_tile</span><span class="p">[</span><span class="n">tile_size</span><span class="p">][</span><span class="n">tile_size</span><span class="p">];</span>
+
+    <span class="kt">int</span> <span class="n">local_column</span> <span class="o">=</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">local_row</span> <span class="o">=</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">y</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">column</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span> <span class="o">*</span> <span class="n">tile_size</span> <span class="o">+</span> <span class="n">local_column</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">row</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">y</span> <span class="o">*</span> <span class="n">tile_size</span> <span class="o">+</span> <span class="n">local_row</span><span class="p">;</span>
+
+    <span class="kt">float</span> <span class="n">sum</span> <span class="o">=</span> <span class="mf">0.0f</span><span class="p">;</span>
+
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">tile_start</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+         <span class="n">tile_start</span> <span class="o">&lt;</span> <span class="n">K</span><span class="p">;</span>
+         <span class="n">tile_start</span> <span class="o">+=</span> <span class="n">tile_size</span><span class="p">)</span> <span class="p">{</span>
+        <span class="kt">int</span> <span class="n">A_column</span> <span class="o">=</span> <span class="n">tile_start</span> <span class="o">+</span> <span class="n">local_column</span><span class="p">;</span>
+        <span class="kt">int</span> <span class="n">B_row</span> <span class="o">=</span> <span class="n">tile_start</span> <span class="o">+</span> <span class="n">local_row</span><span class="p">;</span>
+
+        <span class="n">A_tile</span><span class="p">[</span><span class="n">local_row</span><span class="p">][</span><span class="n">local_column</span><span class="p">]</span> <span class="o">=</span>
+            <span class="n">row</span> <span class="o">&lt;</span> <span class="n">M</span> <span class="o">&amp;&amp;</span> <span class="n">A_column</span> <span class="o">&lt;</span> <span class="n">K</span>
+                <span class="o">?</span> <span class="n">A</span><span class="p">[</span><span class="n">row</span> <span class="o">*</span> <span class="n">K</span> <span class="o">+</span> <span class="n">A_column</span><span class="p">]</span>
+                <span class="o">:</span> <span class="mf">0.0f</span><span class="p">;</span>
+
+        <span class="n">B_tile</span><span class="p">[</span><span class="n">local_row</span><span class="p">][</span><span class="n">local_column</span><span class="p">]</span> <span class="o">=</span>
+            <span class="n">B_row</span> <span class="o">&lt;</span> <span class="n">K</span> <span class="o">&amp;&amp;</span> <span class="n">column</span> <span class="o">&lt;</span> <span class="n">N</span>
+                <span class="o">?</span> <span class="n">B</span><span class="p">[</span><span class="n">B_row</span> <span class="o">*</span> <span class="n">N</span> <span class="o">+</span> <span class="n">column</span><span class="p">]</span>
+                <span class="o">:</span> <span class="mf">0.0f</span><span class="p">;</span>
+
+        <span class="n">__syncthreads</span><span class="p">();</span>
+
+        <span class="cp">#pragma unroll
+</span>        <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">inner</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">inner</span> <span class="o">&lt;</span> <span class="n">tile_size</span><span class="p">;</span> <span class="o">++</span><span class="n">inner</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">sum</span> <span class="o">+=</span> <span class="n">A_tile</span><span class="p">[</span><span class="n">local_row</span><span class="p">][</span><span class="n">inner</span><span class="p">]</span>
+                 <span class="o">*</span> <span class="n">B_tile</span><span class="p">[</span><span class="n">inner</span><span class="p">][</span><span class="n">local_column</span><span class="p">];</span>
+        <span class="p">}</span>
+
+        <span class="n">__syncthreads</span><span class="p">();</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">row</span> <span class="o">&lt;</span> <span class="n">M</span> <span class="o">&amp;&amp;</span> <span class="n">column</span> <span class="o">&lt;</span> <span class="n">N</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">C</span><span class="p">[</span><span class="n">row</span> <span class="o">*</span> <span class="n">N</span> <span class="o">+</span> <span class="n">column</span><span class="p">]</span> <span class="o">=</span> <span class="n">sum</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>The zero fill handles an incomplete tile at the right or bottom edge. It also
+handles the final inner tile when $K$ is not a multiple of 16. Every thread
+must still reach both barriers, so the bounds check surrounds the memory
+operation instead of returning early from the kernel.</p>
+
+<p>The global loads are coalesced:</p>
+
+<ul>
+  <li>neighboring x-lanes load neighboring columns from a row of $\mathbf{A}$;</li>
+  <li>those same lanes load neighboring columns from a row of $\mathbf{B}$; and</li>
+  <li>neighboring x-lanes eventually write neighboring elements of $\mathbf{C}$.</li>
+</ul>
+
+<p>We have now created reuse at the global-memory boundary. But inside the tile,
+each thread still computes only one output.</p>
+
+<h2 id="more-than-one-output-per-thread">More than one output per thread</h2>
+
+<p>Look at the inner loop of the basic tiled kernel:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>load one A value from shared memory
+load one B value from shared memory
+perform one FMA
+</code></pre></div></div>
+
+<p>Shared memory is much faster than global memory, but two shared-memory loads
+for every FMA can still leave the arithmetic pipelines waiting. We can reuse
+the values one more time by giving each thread several accumulators.</p>
+
+<p>This creates a hierarchy of ownership:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>grid
+  -&gt; one block owns a BM x BN output tile
+       -&gt; one thread owns a TM x TN output micro-tile
+            -&gt; one register owns one output accumulator
+</code></pre></div></div>
+
+<p>Shared memory reuses data across threads in the block. Registers reuse data
+across the outputs owned by one thread.</p>
+
+<h3 id="one-dimensional-register-tiling">One-dimensional register tiling</h3>
+
+<p>First let one thread compute $T_M$ output rows and one output column. At a
+fixed inner position, the thread needs</p>
+
+<ul>
+  <li>$T_M$ values from the shared $\mathbf{A}$ tile;</li>
+  <li>one value from the shared $\mathbf{B}$ tile; and</li>
+  <li>$T_M$ accumulators in registers.</li>
+</ul>
+
+<p>The single $\mathbf{B}$ value is reused across all $T_M$ FMAs:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">float</span> <span class="n">B_value</span> <span class="o">=</span> <span class="n">B_tile</span><span class="p">[</span><span class="n">inner</span><span class="p">][</span><span class="n">thread_column</span><span class="p">];</span>
+
+<span class="cp">#pragma unroll
+</span><span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">result_row</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">result_row</span> <span class="o">&lt;</span> <span class="n">TM</span><span class="p">;</span> <span class="o">++</span><span class="n">result_row</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">results</span><span class="p">[</span><span class="n">result_row</span><span class="p">]</span> <span class="o">+=</span>
+        <span class="n">A_tile</span><span class="p">[</span><span class="n">thread_row</span> <span class="o">*</span> <span class="n">TM</span> <span class="o">+</span> <span class="n">result_row</span><span class="p">][</span><span class="n">inner</span><span class="p">]</span>
+        <span class="o">*</span> <span class="n">B_value</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>For $T_M=8$, nine shared-memory loads enable eight FMAs. The basic tiled
+kernel needed sixteen loads for those same eight FMAs. This is useful reuse,
+but it is one-sided: values from $\mathbf{B}$ are reused while every
+$\mathbf{A}$ value still feeds one accumulator in that thread.</p>
+
+<h3 id="two-dimensional-register-tiling">Two-dimensional register tiling</h3>
+
+<p>Now give one thread a $T_M\times T_N$ rectangle of outputs. For one inner
+position, the thread loads</p>
+
+\[T_M \quad \text{values from }\mathbf{A}\]
+
+<p>and</p>
+
+\[T_N \quad \text{values from }\mathbf{B}.\]
+
+<p>It then forms their outer product:</p>
+
+\[\text{results}_{i,j}
+  \mathrel{+}=A_iB_j,
+\qquad
+0\le i&lt;T_M,
+\quad
+0\le j&lt;T_N.\]
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">float</span> <span class="n">A_values</span><span class="p">[</span><span class="n">TM</span><span class="p">];</span>
+<span class="kt">float</span> <span class="n">B_values</span><span class="p">[</span><span class="n">TN</span><span class="p">];</span>
+
+<span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">inner</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">inner</span> <span class="o">&lt;</span> <span class="n">BK</span><span class="p">;</span> <span class="o">++</span><span class="n">inner</span><span class="p">)</span> <span class="p">{</span>
+    <span class="cp">#pragma unroll
+</span>    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">TM</span><span class="p">;</span> <span class="o">++</span><span class="n">i</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">A_values</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">A_tile</span><span class="p">[</span><span class="n">thread_row</span> <span class="o">*</span> <span class="n">TM</span> <span class="o">+</span> <span class="n">i</span><span class="p">][</span><span class="n">inner</span><span class="p">];</span>
+    <span class="p">}</span>
+
+    <span class="cp">#pragma unroll
+</span>    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">j</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="n">TN</span><span class="p">;</span> <span class="o">++</span><span class="n">j</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">B_values</span><span class="p">[</span><span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">B_tile</span><span class="p">[</span><span class="n">inner</span><span class="p">][</span><span class="n">thread_column</span> <span class="o">*</span> <span class="n">TN</span> <span class="o">+</span> <span class="n">j</span><span class="p">];</span>
+    <span class="p">}</span>
+
+    <span class="cp">#pragma unroll
+</span>    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">TM</span><span class="p">;</span> <span class="o">++</span><span class="n">i</span><span class="p">)</span> <span class="p">{</span>
+        <span class="cp">#pragma unroll
+</span>        <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">j</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="n">TN</span><span class="p">;</span> <span class="o">++</span><span class="n">j</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">results</span><span class="p">[</span><span class="n">i</span><span class="p">][</span><span class="n">j</span><span class="p">]</span> <span class="o">+=</span> <span class="n">A_values</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">*</span> <span class="n">B_values</span><span class="p">[</span><span class="n">j</span><span class="p">];</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>For $T_M=T_N=8$, sixteen shared-memory loads enable 64 FMAs. Each loaded
+$\mathbf{A}$ value is used across eight output columns, and each loaded
+$\mathbf{B}$ value is used across eight output rows.</p>
+
+<p>The shared-memory arithmetic intensity of this inner step is</p>
+
+\[AI_{\text{register tile}}
+  =\frac{2T_MT_N}{4(T_M+T_N)}
+  =\frac{T_MT_N}{2(T_M+T_N)}
+  \quad \text{FLOPs/byte}.\]
+
+<p>For $T_M=T_N=8$, that is</p>
+
+\[\frac{8\cdot8}{2(8+8)}=2
+\quad \text{FLOPs per shared-memory byte}.\]
+
+<p>The basic one-output thread achieved</p>
+
+\[\frac{2}{4(1+1)}=0.25
+\quad \text{FLOPs per shared-memory byte}.\]
+
+<p>So the register micro-tile increases reuse at the shared-memory boundary by
+8x.</p>
+
+<h3 id="the-complete-2d-register-tiled-schedule">The complete 2D register-tiled schedule</h3>
+
+<p>Use</p>
+
+\[B_M=B_N=128,
+\qquad B_K=8,
+\qquad T_M=T_N=8.\]
+
+<p>The block owns $128\times128$ outputs. Since every thread owns $8\times8$ of
+them, the block needs</p>
+
+\[\frac{128}{8}\frac{128}{8}
+  =16\cdot16
+  =256 \quad \text{threads}.\]
+
+<p>For every 8-wide step along $K$, those 256 threads cooperatively load</p>
+
+\[128\cdot8+8\cdot128=2048\]
+
+<p>FP32 values, or 8192 bytes, into shared memory. They then perform</p>
+
+\[128\cdot128\cdot8=131{,}072 \quad \text{FMAs}\]
+
+<p>before the next pair of global-memory tiles is needed.</p>
+
+<p>The complete implementation in <code class="language-plaintext highlighter-rouge">05_2d_register_tiled_kernel.cu</code> uses a
+strided loading loop because 2048 tile elements must be loaded by only 256
+threads. Each thread loads several values, the block synchronizes, and then
+the register outer products begin.</p>
+
+<aside class="callout"><strong>Why not make the micro-tile enormous?</strong>
+
+A larger micro-tile creates more reuse, but every output needs an accumulator.
+An $8\times8$ tile already asks for 64 accumulator registers per thread before
+counting addresses and temporary values. More registers can reduce the number
+of resident warps, and enough pressure can make the compiler spill values into
+local memory. Register tiling trades occupancy for reuse; it does not remove a
+cost for free.
+
+</aside>
+
+<h2 id="vectorizing-the-tile-loads">Vectorizing the tile loads</h2>
+
+<p>The register-tiled kernel has reduced how often input tiles cross global
+memory. We can now reduce the number of instructions used to move each tile.</p>
+
+<p>A scalar copy moves one FP32 value per load instruction:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">shared</span><span class="p">[</span><span class="n">destination</span> <span class="o">+</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">global</span><span class="p">[</span><span class="n">source</span> <span class="o">+</span> <span class="mi">0</span><span class="p">];</span>
+<span class="n">shared</span><span class="p">[</span><span class="n">destination</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">global</span><span class="p">[</span><span class="n">source</span> <span class="o">+</span> <span class="mi">1</span><span class="p">];</span>
+<span class="n">shared</span><span class="p">[</span><span class="n">destination</span> <span class="o">+</span> <span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">global</span><span class="p">[</span><span class="n">source</span> <span class="o">+</span> <span class="mi">2</span><span class="p">];</span>
+<span class="n">shared</span><span class="p">[</span><span class="n">destination</span> <span class="o">+</span> <span class="mi">3</span><span class="p">]</span> <span class="o">=</span> <span class="n">global</span><span class="p">[</span><span class="n">source</span> <span class="o">+</span> <span class="mi">3</span><span class="p">];</span>
+</code></pre></div></div>
+
+<p>When the address is 16-byte aligned, a <code class="language-plaintext highlighter-rouge">float4</code> copy expresses the same 16
+bytes as one vector load:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">float4</span> <span class="n">values</span> <span class="o">=</span>
+    <span class="o">*</span><span class="k">reinterpret_cast</span><span class="o">&lt;</span><span class="k">const</span> <span class="n">float4</span><span class="o">*&gt;</span><span class="p">(</span><span class="o">&amp;</span><span class="n">global</span><span class="p">[</span><span class="n">source</span><span class="p">]);</span>
+<span class="o">*</span><span class="k">reinterpret_cast</span><span class="o">&lt;</span><span class="n">float4</span><span class="o">*&gt;</span><span class="p">(</span><span class="o">&amp;</span><span class="n">shared</span><span class="p">[</span><span class="n">destination</span><span class="p">])</span> <span class="o">=</span> <span class="n">values</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>Vectorization does <strong>not</strong> make those 16 bytes disappear. Coalescing already
+combines neighboring lanes’ requests into memory transactions. The benefit is
+that each thread issues fewer load instructions and gives the compiler an
+explicit alignment guarantee.</p>
+
+<p>That guarantee is also the danger. A <code class="language-plaintext highlighter-rouge">float4</code> access requires suitable
+alignment and four valid consecutive elements. The vectorized kernel checks
+the leading dimensions and tile edges, then falls back to scalar copies when
+those conditions are not satisfied. Casting an arbitrary pointer and hoping
+it is aligned is undefined behaviour, not an optimization.</p>
+
+<p>The same idea applies to the output. Every row of an $8\times8$ thread
+micro-tile contains eight consecutive floats, so an aligned interior tile can
+be written with two <code class="language-plaintext highlighter-rouge">float4</code> stores per row.</p>
+
+<h2 id="what-each-optimization-changed">What each optimization changed</h2>
+
+<p>We can now separate the optimization ladder by memory boundary:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Kernel</th>
+      <th style="text-align: right">Outputs per thread</th>
+      <th>Global-memory change</th>
+      <th>Shared-memory change</th>
+      <th>Main cost introduced</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Row-first direct</td>
+      <td style="text-align: right">1</td>
+      <td>Strided $\mathbf{A}$ and $\mathbf{C}$ access</td>
+      <td>None</td>
+      <td>Repeated global loads</td>
+    </tr>
+    <tr>
+      <td>Coalesced direct</td>
+      <td style="text-align: right">1</td>
+      <td>Coalesced $\mathbf{B}$ and $\mathbf{C}$ access</td>
+      <td>None</td>
+      <td>Repeated global loads remain</td>
+    </tr>
+    <tr>
+      <td>Shared-memory tiled</td>
+      <td style="text-align: right">1</td>
+      <td>Each input tile is loaded once per block</td>
+      <td>2 loads per FMA per thread</td>
+      <td>Tile storage and barriers</td>
+    </tr>
+    <tr>
+      <td>1D register tiled</td>
+      <td style="text-align: right">$T_M$</td>
+      <td>Same block-level reuse</td>
+      <td>Reuses one $\mathbf{B}$ value</td>
+      <td>More accumulators</td>
+    </tr>
+    <tr>
+      <td>2D register tiled</td>
+      <td style="text-align: right">$T_MT_N$</td>
+      <td>Same block-level reuse</td>
+      <td>Reuses both $\mathbf{A}$ and $\mathbf{B}$ values</td>
+      <td>Register pressure</td>
+    </tr>
+    <tr>
+      <td>Vectorized 2D tile</td>
+      <td style="text-align: right">$T_MT_N$</td>
+      <td>Fewer wide load/store instructions</td>
+      <td>Same register reuse</td>
+      <td>Alignment and edge paths</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The changes are cumulative. Register tiling does not replace shared-memory
+tiling; it adds another level of reuse below it. Vectorization does not replace
+coalescing; it reduces instruction count after the access pattern is already
+contiguous.</p>
+
+<h2 id="what-we-should-benchmark">What we should benchmark</h2>
+
+<p>A cost model tells us what changed. It does not tell us which tile sizes win on
+every GPU or matrix shape. A useful benchmark should report at least</p>
+
+<ul>
+  <li>GPU model and CUDA version;</li>
+  <li>$M$, $N$, and $K$ separately, not only square matrices;</li>
+  <li>warm-up count and timing method;</li>
+  <li>achieved TFLOPs;</li>
+  <li>global-load efficiency and DRAM throughput;</li>
+  <li>shared-memory throughput and bank conflicts;</li>
+  <li>registers per thread, occupancy, and any local-memory spills; and</li>
+  <li>numerical error against a trusted reference such as cuBLAS.</li>
+</ul>
+
+<p>The most revealing experiments vary one dimension at a time. A square
+$4096\times4096$ multiplication rewards large tiles and reuse. A tall, narrow
+projection can expose wasted work at tile edges. Small matrices may be limited
+by launch overhead and may fit in cache well enough to hide differences that
+are obvious at realistic model sizes.</p>
+
+<p>We should also compare against cuBLAS without pretending that a CUDA-core FP32
+teaching kernel has the same goal as a production library. cuBLAS selects
+different algorithms by shape, datatype, layout, hardware, and workspace. Its
+value as a baseline is precisely that it shows how much room remains.</p>
+
+<h2 id="main-takeaways">Main takeaways</h2>
+
+<p>GEMM optimization is a story about preserving the same value across several
+levels of the memory hierarchy long enough to use it more than once.</p>
+
+<ul>
+  <li>
+    <p><strong>GEMM has high potential arithmetic intensity.</strong> Its ideal intensity grows
+with matrix size because every input value can contribute to many outputs.</p>
+  </li>
+  <li>
+    <p><strong>Potential reuse is not automatic reuse.</strong> A one-thread-per-output kernel
+requests $2MNK$ input elements even though the two input matrices contain
+only $MK+KN$ elements.</p>
+  </li>
+  <li>
+    <p><strong>Thread ownership determines coalescing.</strong> Since <code class="language-plaintext highlighter-rouge">threadIdx.x</code> changes
+fastest inside a warp, mapping x to output columns gives consecutive lanes
+consecutive $\mathbf{B}$ loads and $\mathbf{C}$ stores.</p>
+  </li>
+  <li>
+    <p><strong>A block tile creates deliberate global-memory reuse.</strong> The block loads one
+tile from each input into shared memory and uses them to update many output
+elements before advancing along $K$.</p>
+  </li>
+  <li>
+    <p><strong>The $K$ dimension is accumulated, not tiled independently.</strong> Every pair of
+input tiles produces only a partial output tile. The registers hold those
+partial sums until the complete inner dimension has been visited.</p>
+  </li>
+  <li>
+    <p><strong>Register tiling creates a second level of reuse.</strong> A thread loads short
+vectors from the shared tiles and forms an outer product, updating a grid of
+register accumulators.</p>
+  </li>
+  <li>
+    <p><strong>More reuse consumes more resources.</strong> Larger block tiles need more shared
+memory. Larger thread tiles need more registers. Both can reduce occupancy
+or make edge handling more wasteful.</p>
+  </li>
+  <li>
+    <p><strong>Vectorization reduces instructions, not bytes.</strong> It is useful only when
+alignment and bounds make the wider access valid.</p>
+  </li>
+  <li>
+    <p><strong>The optimization target moves inward.</strong> First global memory is the
+bottleneck. Shared-memory tiling moves the pressure to shared memory.
+Register tiling moves more of the work into FMAs. A good GEMM kernel keeps
+repeating this process until the arithmetic pipelines, rather than data
+delivery, set the pace.</p>
+  </li>
+</ul>
+
+<p>The equation $\mathbf{C}=\mathbf{A}\mathbf{B}$ never changed. What changed was
+the unit of ownership: first one thread owned one output, then one block owned
+an output tile, and finally each thread owned a register micro-tile inside that
+block. Every step made reuse explicit at one more level of the machine.</p>
+
+    </d-article>
+
+    <d-appendix>
+      <d-footnote-list></d-footnote-list>
+      <d-citation-list></d-citation-list>
+      <div class="base-grid appendix-entry">
+  <h3 style="grid-column: 0;">Citation</h3>
+  <p class="author-footnote">For attribution in academic contexts, please cite this work as:</p>
+
+  <div class="author-footnote">
+  
+  <div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    Mishra, Anshuman. "How to make your models fast." Online, 2026.
+</code></pre></div></div>
+
+  </div>
+
+  <p class="author-footnote">or as a BibTeX entry:</p>
+
+  <div class="author-footnote">
+  
+  <div class="language-bibtex highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="nc">@book</span><span class="p">{</span><span class="nl">how-to-make-your-models-fast</span><span class="p">,</span>
+      <span class="na">title</span> <span class="p">=</span> <span class="s">{How to make your models fast}</span><span class="p">,</span>
+      <span class="na">author</span> <span class="p">=</span> <span class="s">{Mishra, Anshuman}</span><span class="p">,</span>
+      <span class="na">howpublished</span> <span class="p">=</span> <span class="s">{Online}</span><span class="p">,</span>
+      <span class="na">url</span> <span class="p">=</span> <span class="s">{https://athleticcoder21.github.io/inference-book/}</span><span class="p">,</span>
+      <span class="na">year</span> <span class="p">=</span> <span class="s">{2026}</span>
+    <span class="p">}</span>
+</code></pre></div></div>
+
+  </div>
+
+</div>
+
+    </d-appendix>
+
+    <d-bibliography src="/inference-book/assets/bibliography/"></d-bibliography>
+
+    
+    
+  </div>
+
+  <!-- Footer -->
+  
+  <footer class="sticky-bottom mt-5" role="contentinfo">
+    
+
+    <div class="container">
+      © Copyright 2026
+      
+      
+      . How to make your models fast by Anshuman Mishra.
+
+      
+      
+    </div>
+  </footer>
+
+
+
+  <!-- JavaScripts -->
+  <!-- jQuery -->
+<script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+
+<!-- Bootsrap & MDB scripts -->
+<script src="/inference-book/assets/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/js/mdb.min.js" integrity="sha256-NdbiivsvWt7VYCt6hYNT3h/th9vSTL4EDWeGs5SN3DA=" crossorigin="anonymous"></script>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  <!-- Medium Zoom JS -->
+  <script defer src="https://cdn.jsdelivr.net/npm/medium-zoom@1.1.0/dist/medium-zoom.min.js" integrity="sha256-ZgMyDAIYDYGxbcpJcfUnYwNevG/xi9OHKaR/8GK+jWc=" crossorigin="anonymous"></script>
+  <script defer src="/inference-book/assets/js/zoom.js?85ddb88934d28b74e78031fd54cf8308"></script>
+
+
+
+
+
+
+<!-- Load Common JS -->
+<script src="/inference-book/assets/js/no_defer.js?2781658a0a2b13ed609542042a859126"></script>
+<script defer src="/inference-book/assets/js/common.js?e0514a05c5c95ac1a93a8dfd5249b92e"></script>
+<script defer src="/inference-book/assets/js/copy_code.js?12775fdf7f95e901d7119054556e495f" type="text/javascript"></script>
+
+<!-- Jupyter Open External Links New Tab -->
+<script defer src="/inference-book/assets/js/jupyter_new_tab.js?d9f17b6adc2311cbabd747f4538bb15f"></script>
+
+<!-- Tufte-style margin sidenotes for d-footnote -->
+<script defer src="/inference-book/assets/js/sidenotes.js?5488feda9017667a4b53f647c3851cee"></script>
+
+<!-- Removed Badges -->
+
+
+  <!-- MathJax -->
+  <script defer type="text/javascript" id="MathJax-script" src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js" integrity="sha256-MASABpB4tYktI2Oitl4t+78w/lyA+D7b/s9GEP0JOGI=" crossorigin="anonymous"></script>
+  <script src="/inference-book/assets/js/mathjax-setup.js?70d799092f862ad98c7876aa47712e20"></script>
+  <script defer src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6" crossorigin="anonymous"></script>
+  <!-- Removed Pseudocode -->
+
+
+
+
+
+
+
+
+
+  <!-- Scrolling Progress Bar -->
+  <script defer src="/inference-book/assets/js/progress-bar.js?2f30e0e6801ea8f5036fa66e1ab0a71a" type="text/javascript"></script>
+
+
+
+
+
+
+
+  <!-- Back to Top -->
+  <script src="/inference-book/assets/js/vanilla-back-to-top.min.js?f40d453793ff4f64e238e420181a1d17"></script>
+  <script>
+    addBackToTop();
+  </script>
+
+
+
+
+
+
+
+
+</body>
+</html>

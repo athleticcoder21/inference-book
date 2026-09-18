@@ -301,6 +301,8 @@
             
           
             
+          
+            
               
                 
                 
@@ -315,7 +317,7 @@
                   <div class="dropdown-menu dropdown-menu-right" aria-labelledby="navbarDropdown">
                     
                       
-                        <a class="dropdown-item " href="/inference-book/index">Part 0. Introduction</a>
+                        <a class="dropdown-item " href="/inference-book/index">Introduction</a>
                       
                     
                       
@@ -328,6 +330,10 @@
                     
                       
                         <a class="dropdown-item " href="/inference-book/layernorm">LayerNorm</a>
+                      
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/gemm">GEMM</a>
                       
                     
                   </div>
@@ -919,13 +925,13 @@ $R \ll MN$. In that case,</p>
 from doing fewer FLOPs, we actually do a little more. It came from eliminating
 one complete read of the input matrix.</strong></p>
 
-<p>::: {.callout-note}</p>
+<aside class="callout"><strong>Why this helps</strong>
 
-<p>Note that this bump did not come
+Note that this bump did not come
 from doing fewer FLOPs, we actually do a little more. It came from eliminating
-one complete read of the input matrix.</p>
+one complete read of the input matrix.
 
-<p>&lt;/aside&gt;</p>
+</aside>
 <h2 id="one-warp-per-row">One warp per row</h2>
 
 <h3 id="splitting-a-row-across-the-warp">Splitting a row across the warp</h3>

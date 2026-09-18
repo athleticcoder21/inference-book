@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title id="title">Shared-memory tiling for GEMM</title>
+  <desc id="desc">Tiles from A and B move along K and repeatedly update one output tile of C.</desc>
+  <defs>
+    <pattern id="smallGrid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#33435e" stroke-width="1" opacity="0.45"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#52637c"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="640" rx="28" fill="#f7f8fb"/>
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" fill="#172237">
+    <text x="600" y="52" text-anchor="middle" font-size="32" font-weight="700">One block accumulates one tile of C</text>
+
+    <text x="220" y="112" text-anchor="middle" font-size="28" font-weight="700">A</text>
+    <rect x="70" y="135" width="300" height="240" rx="14" fill="#deebff" stroke="#293d5d" stroke-width="3"/>
+    <rect x="70" y="135" width="300" height="240" rx="14" fill="url(#smallGrid)"/>
+    <rect x="70" y="231" width="84" height="72" fill="#ff9989" stroke="#b4473a" stroke-width="3"/>
+    <rect x="202" y="231" width="84" height="72" fill="#ff9989" stroke="#b4473a" stroke-width="3" opacity="0.42"/>
+    <path d="M 155 216 L 198 216" stroke="#52637c" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="220" y="409" text-anchor="middle" font-size="20" fill="#59677d">BM x BK tile moves across K</text>
+
+    <text x="594" y="112" text-anchor="middle" font-size="28" font-weight="700">B</text>
+    <rect x="488" y="135" width="212" height="240" rx="14" fill="#fff0bd" stroke="#293d5d" stroke-width="3"/>
+    <rect x="488" y="135" width="212" height="240" rx="14" fill="url(#smallGrid)"/>
+    <rect x="560" y="135" width="72" height="84" fill="#62d5c2" stroke="#208576" stroke-width="3"/>
+    <rect x="560" y="267" width="72" height="84" fill="#62d5c2" stroke="#208576" stroke-width="3" opacity="0.42"/>
+    <path d="M 662 220 L 662 263" stroke="#52637c" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="594" y="409" text-anchor="middle" font-size="20" fill="#59677d">BK x BN tile moves down K</text>
+
+    <text x="980" y="112" text-anchor="middle" font-size="28" font-weight="700">C</text>
+    <rect x="830" y="135" width="300" height="240" rx="14" fill="#eadfff" stroke="#293d5d" stroke-width="3"/>
+    <rect x="830" y="135" width="300" height="240" rx="14" fill="url(#smallGrid)"/>
+    <rect x="902" y="231" width="120" height="96" fill="#a984ef" stroke="#5c4399" stroke-width="3"/>
+    <text x="980" y="409" text-anchor="middle" font-size="20" fill="#59677d">BM x BN partial sums stay in registers</text>
+
+    <path d="M 372 265 C 420 265, 438 200, 484 200" fill="none" stroke="#52637c" stroke-width="3" marker-end="url(#arrow)"/>
+    <path d="M 704 265 C 758 265, 778 279, 826 279" fill="none" stroke="#52637c" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="236" y="486" width="728" height="94" rx="20" fill="#ffffff" stroke="#cad2df" stroke-width="2"/>
+    <text x="600" y="523" text-anchor="middle" font-size="19" font-weight="700">load tiles -> sync -> multiply -> sync -> advance</text>
+    <text x="600" y="557" text-anchor="middle" font-size="20" fill="#59677d">Every pair of input tiles updates the same output tile.</text>
+  </g>
+</svg>

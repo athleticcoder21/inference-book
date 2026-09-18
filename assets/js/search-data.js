@@ -9,8 +9,8 @@ ninja.data = [{
     handler: () => {
       window.location.href = "/inference-book/";
     },
-  },{id: "dropdown-part-0-introduction",
-              title: "Part 0. Introduction",
+  },{id: "dropdown-introduction",
+              title: "Introduction",
               description: "",
               section: "Dropdown",
               handler: () => {
@@ -32,6 +32,13 @@ ninja.data = [{
               },
             },{id: "dropdown-layernorm",
               title: "LayerNorm",
+              description: "",
+              section: "Dropdown",
+              handler: () => {
+                window.location.href = "";
+              },
+            },{id: "dropdown-gemm",
+              title: "GEMM",
               description: "",
               section: "Dropdown",
               handler: () => {

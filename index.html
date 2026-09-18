@@ -19,7 +19,7 @@
   
 </title>
 <meta name="author" content=" ">
-<meta name="description" content="A work-in-progress book for learning inference performance from first principles: kernels, memory traffic, transformer execution, and serving systems.">
+<meta name="description" content="A slowly growing book about reasoning through CUDA kernels from first principles.">
 
   <meta name="keywords" content="cuda, gpu, kernels, llm, inference, performance optimization">
 
@@ -33,7 +33,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="How to make your models fast">
   <meta property="og:url" content="https://athleticcoder21.github.io/inference-book/">
-  <meta property="og:description" content="A work-in-progress book for learning inference performance from first principles: kernels, memory traffic, transformer execution, and serving systems.">
+  <meta property="og:description" content="A slowly growing book about reasoning through CUDA kernels from first principles.">
   
     <meta property="og:image" content="https://athleticcoder21.github.io/inference-book/assets/gemv/image1-v2.png">
   
@@ -42,7 +42,7 @@
   <!-- Twitter card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="How to make your models fast">
-  <meta name="twitter:description" content="A work-in-progress book for learning inference performance from first principles: kernels, memory traffic, transformer execution, and serving systems.">
+  <meta name="twitter:description" content="A slowly growing book about reasoning through CUDA kernels from first principles.">
   
     <meta name="twitter:image" content="https://athleticcoder21.github.io/inference-book/assets/gemv/image1-v2.png">
   
@@ -97,7 +97,7 @@
         "name": "How to make your models fast",
         "headline": "How to make your models fast",
         
-        "description": "A work-in-progress book for learning inference performance from first principles: kernels, memory traffic, transformer execution, and serving systems."
+        "description": "A slowly growing book about reasoning through CUDA kernels from first principles."
     }
   </script>
 
@@ -174,7 +174,7 @@
   <script async type="text/json">
       {
             "title": "How to make your models fast",
-            "description": "A work-in-progress book for learning inference performance from first principles: kernels, memory traffic, transformer execution, and serving systems.",
+            "description": "A slowly growing book about reasoning through CUDA kernels from first principles.",
             "published": "September 10, 2026",
             "authors": [
               
@@ -297,6 +297,8 @@
             
           
             
+          
+            
               
                 
                 
@@ -309,7 +311,7 @@
                   <div class="dropdown-menu dropdown-menu-right" aria-labelledby="navbarDropdown">
                     
                       
-                        <a class="dropdown-item " href="/inference-book/index">Part 0. Introduction</a>
+                        <a class="dropdown-item " href="/inference-book/index">Introduction</a>
                       
                     
                       
@@ -322,6 +324,10 @@
                     
                       
                         <a class="dropdown-item " href="/inference-book/layernorm">LayerNorm</a>
+                      
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/gemm">GEMM</a>
                       
                     
                   </div>
@@ -363,9 +369,9 @@
     <d-title>
       <h1>How to make your models fast</h1>
       
-      <p><span class="subtitle">A systems view of LLM inference on GPUs</span> <span class="subtitle-links">( | <a href="gemv">GEMV</a>)</span></p>
+      <p><span class="subtitle">CUDA kernel worklogs for understanding inference performance</span> <span class="subtitle-links">( | <a href="gemv">GEMV</a>)</span></p>
       
-      <p>A work-in-progress book for learning inference performance from first principles: kernels, memory traffic, transformer execution, and serving systems.</p>
+      <p>A slowly growing book about reasoning through CUDA kernels from first principles.</p>
     </d-title>
 
     
@@ -408,52 +414,76 @@
           <h3>Contents</h3>
           
           <div>
-            <a href="#the-question">The question</a>
+            <a href="#how-each-worklog-proceeds">How each worklog proceeds</a>
           </div>
           
           
           <div>
-            <a href="#how-the-book-grows">How the book grows</a>
+            <a href="#current-chapters">Current chapters</a>
           </div>
           
           
         </nav>
       </d-contents>
       
-      <h2 id="the-question">The question</h2>
+      <p>I am learning how to make model inference faster by starting at the lowest level
+I can reasonably reach: individual CUDA kernels.</p>
 
-<p>Inference optimization is not magic. Every performance result is a consequence
-of computation, memory traffic, communication, and how an algorithm maps onto
-the hardware underneath it.</p>
+<p>This book is a slowly growing compilation of those worklogs. For now, its scope
+is deliberately narrow. We write one kernel, count its computation and memory
+traffic, inspect how its threads use the GPU, and then improve it one bottleneck
+at a time.</p>
 
-<p>This book develops a practical way to answer one question:</p>
+<p>This is not meant to be a broad guide to every layer of model scaling. There is
+no large roadmap that I am promising to fill in. I will add a chapter when I
+have learned enough to explain the problem honestly and work through an
+implementation.</p>
 
-<blockquote>
-  <p>What is stopping this workload from going faster—compute, memory,
-communication, or the way it is mapped onto the GPU?</p>
-</blockquote>
+<h2 id="how-each-worklog-proceeds">How each worklog proceeds</h2>
 
-<p>Each chapter starts with a model of the work, follows it with a runnable
-implementation, and then uses measurements to challenge that model. The code
-lives beside the writing so the reasoning can be inspected and reproduced.</p>
-
-<h2 id="how-the-book-grows">How the book grows</h2>
-
-<p>The structure moves from a single GPU outward:</p>
+<p>Every chapter follows roughly the same loop:</p>
 
 <ol>
-  <li>
-<strong>Kernels</strong> — memory layout, warp execution, tiling, and reductions.</li>
-  <li>
-<strong>Transformer inference</strong> — attention, MLPs, prefill, decode, and KV caches.</li>
-  <li>
-<strong>Serving systems</strong> — batching, scheduling, quantization, and latency versus throughput.</li>
-  <li>
-<strong>Scaling out</strong> — parallelism, communication, and fleet-level efficiency.</li>
+  <li>Write the most straightforward implementation.</li>
+  <li>Count its FLOPs, memory traffic, and arithmetic intensity.</li>
+  <li>Look at what a warp actually computes and reads.</li>
+  <li>Change one part of the algorithm or its mapping to the GPU.</li>
+  <li>Recalculate the cost and write the improved kernel.</li>
 </ol>
 
-<p>Only finished chapters appear in the navigation. Start with
-<a href="gemv">GEMV</a>.</p>
+<p>The intermediate versions stay in the chapter. The point is not only to arrive
+at fast code, but to make the reasoning that led there reusable.</p>
+
+<h2 id="current-chapters">Current chapters</h2>
+
+<p><a class="chapter-card" href="/inference-book/gemv/">
+  <span class="chapter-card__eyebrow">Chapter 1 · Kernels</span>
+  <strong>GEMV</strong>
+  <span>One matrix, one vector, and an access pattern that quietly wastes most of the GPU’s memory bandwidth.</span>
+  <span class="chapter-card__link">Read the chapter →</span>
+</a></p>
+
+<p><a class="chapter-card" href="/inference-book/softmax/">
+  <span class="chapter-card__eyebrow">Chapter 2 · Kernels</span>
+  <strong>Softmax</strong>
+  <span>From a direct row-wise implementation to online statistics, coalesced reads, and warp reductions.</span>
+  <span class="chapter-card__link">Read the chapter →</span>
+</a></p>
+
+<p><a class="chapter-card" href="/inference-book/layernorm/">
+  <span class="chapter-card__eyebrow">Chapter 3 · Kernels</span>
+  <strong>LayerNorm</strong>
+  <span>From three global-memory reads to coalesced Welford statistics and a shared-memory row cache.</span>
+  <span class="chapter-card__link">Read the chapter →</span>
+</a></p>
+
+<p><a class="chapter-card" href="/inference-book/gemm/">
+  <span class="chapter-card__eyebrow">Chapter 4 · Kernels</span>
+  <strong>GEMM</strong>
+  <span>From one output per thread to shared-memory tiles, register micro-tiles, and vectorized loads.</span>
+  <span class="chapter-card__link">Read the chapter →</span>
+</a></p>
+
 
     </d-article>
 
