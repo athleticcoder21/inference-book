@@ -1,0 +1,1821 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <!-- Metadata, OpenGraph and Schema.org -->
+
+
+
+
+<!-- Standard metadata -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>
+  
+  
+    
+      Softmax | How to make your models fast
+    
+  
+</title>
+<meta name="author" content=" ">
+<meta name="description" content="A worklog on optimizing Softmax kernel in CUDA">
+
+  <meta name="keywords" content="cuda, gpu, kernels, llm, inference, performance optimization">
+
+
+
+
+
+
+  <!-- OpenGraph -->
+  <meta property="og:site_name" content="How to make your models fast">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Softmax">
+  <meta property="og:url" content="https://athleticcoder21.github.io/inference-book/softmax/">
+  <meta property="og:description" content="A worklog on optimizing Softmax kernel in CUDA">
+  
+    <meta property="og:image" content="https://athleticcoder21.github.io/inference-book/assets/gemv/image1-v2.png">
+  
+  <meta property="og:locale" content="en">
+
+  <!-- Twitter card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Softmax">
+  <meta name="twitter:description" content="A worklog on optimizing Softmax kernel in CUDA">
+  
+    <meta name="twitter:image" content="https://athleticcoder21.github.io/inference-book/assets/gemv/image1-v2.png">
+  
+  
+
+
+
+  <!-- Schema.org -->
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
+  <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "url": "https://athleticcoder21.github.io/inference-book/softmax/",
+        "name": "How to make your models fast",
+        "headline": "Softmax",
+        
+        "description": "A worklog on optimizing Softmax kernel in CUDA"
+    }
+  </script>
+
+
+
+<!-- Bootstrap & MDB -->
+<link rel="stylesheet" href="/inference-book/assets/css/bootstrap.min.css?a4b3f509e79c54a512b890d73235ef04">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/css/mdb.min.css" integrity="sha256-jpjYvU3G3N6nrrBwXJoVEYI/0zw8htfFnhT9ljN3JJw=" crossorigin="anonymous">
+
+
+
+<!-- Fonts & Icons -->
+<!-- Roboto is self-hosted (see _sass/_fonts.scss). Preload it so it's ready at
+     first paint; with font-display: optional a late font is skipped rather than
+     swapped in, so the page never reflows because of fonts. -->
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/inference-book/assets/fonts/roboto/roboto-latin.woff2">
+<link defer rel="stylesheet" href="/inference-book/assets/css/academicons.min.css?f0b7046b84e425c55f3463ac249818f5">
+<link defer rel="stylesheet" href="/inference-book/assets/css/scholar-icons.css?62b2ac103a88034e6882a5be5f3e2772">
+
+<!-- Code Syntax Highlighting -->
+<link defer rel="stylesheet" href="/inference-book/assets/css/jekyll-pygments-themes-vs.css?4ee1a2facd1a8a76347f4bd43a740500" media="" id="highlight_theme_light">
+
+
+
+<!-- Styles -->
+
+
+
+
+  <link rel="icon" type="image/svg+xml" href="/inference-book/assets/img/omnitrix.svg?7486b7f95f359e8a03d5943d732d4e6a">
+  <link rel="alternate icon" href="/inference-book/assets/img/favicon.ico?2588793a320796e7c656ecd3e63e275b">
+  <link rel="icon" type="image/png" href="/inference-book/assets/img/favicon-96x96.png?db4854e6e5b2f2bd5eeb534574ed9972" sizes="96x96">
+  <link rel="icon" type="image/png" href="/inference-book/assets/img/favicon-192x192.png?9e8e4da98d881b893dfa39341096a022" sizes="192x192">
+  <link rel="apple-touch-icon" href="/inference-book/assets/img/apple-touch-icon.png?eed4a6b8deef431052abb8bdaa437d39">
+
+<link rel="stylesheet" href="/inference-book/assets/css/main.css?d41d8cd98f00b204e9800998ecf8427e">
+<link rel="canonical" href="https://athleticcoder21.github.io/inference-book/softmax/">
+
+<!-- Dark Mode -->
+<script src="/inference-book/assets/js/theme.js?9a0c749ec5240d9cda97bc72359a72c0"></script>
+
+  <link defer rel="stylesheet" href="/inference-book/assets/css/jekyll-pygments-themes-native.css?5847e5ed4a4568527aa6cfab446049ca" media="none" id="highlight_theme_dark">
+  <script>
+    initTheme();
+  </script>
+
+
+<!-- Set Tufte-mode class before first paint to avoid layout flicker -->
+<script>
+  try {
+    if (localStorage.getItem("tufte-sidenotes-enabled") === "1") {
+      document.documentElement.classList.add("tufte-mode");
+    }
+  } catch (e) {}
+</script>
+
+
+
+
+
+
+
+
+
+
+  <!-- Distill js -->
+  <script src="/inference-book/assets/js/distillpub/template.v2.js"></script>
+  <script src="/inference-book/assets/js/distillpub/transforms.v2.js"></script>
+  
+</head>
+
+<body>
+<d-front-matter>
+  <script async type="text/json">
+      {
+            "title": "Softmax",
+            "description": "A worklog on optimizing Softmax kernel in CUDA",
+            "published": "September 11, 2026",
+            "authors": [
+              
+              {
+                "author": "Anshuman Mishra",
+                "authorURL": "https://heyyanshuman.com",
+                "affiliations": [
+                  {
+                    "name": "Independent researcher",
+                    "url": ""
+                  }
+                ]
+              }
+              
+            ],
+            "katex": {
+              "delimiters": [
+                {
+                  "left": "$",
+                  "right": "$",
+                  "display": false
+                },
+                {
+                  "left": "$$",
+                  "right": "$$",
+                  "display": true
+                }
+              ]
+            }
+          }
+    </script>
+</d-front-matter>
+
+
+  <!-- Header -->
+  <header>
+
+  <script>
+    function goToTop() {
+      document.body.scrollTop = 0; // For Safari
+      document.documentElement.scrollTop = 0; // For Chrome, Firefox, IE and Opera
+    }
+
+    // When the user scrolls down 20px from the top of the document, show the button
+    window.onscroll = function() {scrollFunction()};
+
+    function scrollFunction() {
+      // Get the button:
+      let mybutton = document.getElementById("top-button");
+      if (!mybutton) return;
+
+      if (document.body.scrollTop > 40 || document.documentElement.scrollTop > 40) {
+        mybutton.style.display = "block";
+      } else {
+        mybutton.style.display = "none";
+      }
+  }
+  </script>
+
+  <!-- Nav Bar -->
+  <nav id="navbar" class="navbar navbar-light navbar-expand-sm fixed-top" role="navigation">
+    <div class="container">
+      
+        <a class="navbar-brand title font-weight-lighter" href="/inference-book">
+          How to make your models fast
+        </a>
+      
+      <!-- Navbar Toggle -->
+      <button class="navbar-toggler collapsed ml-auto" type="button" data-toggle="collapse" data-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="sr-only">Toggle navigation</span>
+        <span class="icon-bar top-bar"></span>
+        <span class="icon-bar middle-bar"></span>
+        <span class="icon-bar bottom-bar"></span>
+      </button>
+
+      <div class="left-button section-button"><a href="../gemv"><svg viewbox="-78.5 0 512 512"><path d="M257 64L291 98 128 262 291 426 257 460 61 262 257 64Z"></path></svg></a></div>
+      <div class="right-button section-button"><a href="../layernorm"><svg viewbox="-78.5 0 512 512"><path d="M98 460L64 426 227 262 64 98 98 64 294 262 98 460Z"></path></svg></a></div>
+
+      <div class="collapse navbar-collapse text-right" id="navbarNav">
+
+        <ul class="navbar-nav ml-auto flex-nowrap">
+          
+
+          <!-- About -->
+          <li class="nav-item ">
+            <a class="nav-link" href="/inference-book/">
+              
+            </a>
+          </li>
+
+      <li class="nav-item nav-hidden"><a class="nav-link" href="../gemv">Previous Part</a></li>
+
+      <li class="nav-item nav-hidden"><a class="nav-link" href="../layernorm">Next Part</a></li>
+ 
+          <!-- Other pages -->
+          
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+          
+            
+              
+                
+                
+                <li class="nav-item dropdown active">
+                  <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    <i class="ti ti-list dropdown-icon"></i>
+                    <span class="dropdown-text">Sections</span>
+                    
+                      <span class="sr-only">(current)</span>
+                    
+                  </a>
+                  <div class="dropdown-menu dropdown-menu-right" aria-labelledby="navbarDropdown">
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/index">Part 0. Introduction</a>
+                      
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/gemv">GEMV</a>
+                      
+                    
+                      
+                        <a class="dropdown-item active" href="/inference-book/softmax">Softmax</a>
+                      
+                    
+                      
+                        <a class="dropdown-item " href="/inference-book/layernorm">LayerNorm</a>
+                      
+                    
+                  </div>
+                </li>
+              
+            
+          
+          
+          
+            <!-- Toogle theme mode -->
+            <li class="toggle-container">
+              <!-- Inline SVGs (Tabler Icons) rather than the tabler-icons webfont so the
+                   icon is visible at first paint instead of popping in when the font loads. -->
+              <button id="light-toggle" title="Change theme">
+                <svg id="light-toggle-system" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.173 14.83a4 4 0 1 1 5.657 -5.657"></path><path d="M11.294 12.707l.174 .247a7.5 7.5 0 0 0 8.845 2.492a9 9 0 0 1 -14.671 2.914"></path><path d="M3 12h1"></path><path d="M12 3v1"></path><path d="M5.6 5.6l.7 .7"></path><path d="M3 21l18 -18"></path></svg>
+                <svg id="light-toggle-dark" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewbox="0 0 24 24" fill="currentColor"><path d="M12 1.992a10 10 0 1 0 9.236 13.838c.341 -.82 -.476 -1.644 -1.298 -1.31a6.5 6.5 0 0 1 -6.864 -10.787l.077 -.08c.551 -.63 .113 -1.653 -.758 -1.653h-.266l-.068 -.006l-.06 -.002z"></path></svg>
+                <svg id="light-toggle-light" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewbox="0 0 24 24" fill="currentColor"><path d="M12 19a1 1 0 0 1 .993 .883l.007 .117v1a1 1 0 0 1 -1.993 .117l-.007 -.117v-1a1 1 0 0 1 1 -1z"></path><path d="M18.313 16.91l.094 .083l.7 .7a1 1 0 0 1 -1.32 1.497l-.094 -.083l-.7 -.7a1 1 0 0 1 1.218 -1.567l.102 .07z"></path><path d="M7.007 16.993a1 1 0 0 1 .083 1.32l-.083 .094l-.7 .7a1 1 0 0 1 -1.497 -1.32l.083 -.094l.7 -.7a1 1 0 0 1 1.414 0z"></path><path d="M4 11a1 1 0 0 1 .117 1.993l-.117 .007h-1a1 1 0 0 1 -.117 -1.993l.117 -.007h1z"></path><path d="M21 11a1 1 0 0 1 .117 1.993l-.117 .007h-1a1 1 0 0 1 -.117 -1.993l.117 -.007h1z"></path><path d="M6.213 4.81l.094 .083l.7 .7a1 1 0 0 1 -1.32 1.497l-.094 -.083l-.7 -.7a1 1 0 0 1 1.217 -1.567l.102 .07z"></path><path d="M19.107 4.893a1 1 0 0 1 .083 1.32l-.083 .094l-.7 .7a1 1 0 0 1 -1.497 -1.32l.083 -.094l.7 -.7a1 1 0 0 1 1.414 0z"></path><path d="M12 2a1 1 0 0 1 .993 .883l.007 .117v1a1 1 0 0 1 -1.993 .117l-.007 -.117v-1a1 1 0 0 1 1 -1z"></path><path d="M12 7a5 5 0 1 1 -4.995 5.217l-.005 -.217l.005 -.217a5 5 0 0 1 4.995 -4.783z"></path></svg>
+              </button>
+            </li>
+          
+        </ul>
+      </div>
+    </div>
+  </nav>
+  
+    <!-- Scrolling Progress Bar -->
+    <progress id="progress" value="0">
+      <div class="progress-container">
+        <span class="progress-bar"></span>
+      </div>
+    </progress>
+  
+</header>
+
+
+  <!-- Content -->
+  <div class="post distill">
+
+    <d-title>
+      <h1>Softmax</h1>
+      
+      <p>Part 2 of <a href="/inference-book">How to make your models fast</a> (<a href="../gemv">GEMV</a> | <a href="../layernorm">LayerNorm</a>)</p>
+      
+      <p>A worklog on optimizing Softmax kernel in CUDA</p>
+    </d-title>
+
+    
+    <!-- Pre-render the byline server-side so it's visible at first paint. The distill JS
+         re-renders it from <d-front-matter> on DOMContentLoaded, so the markup here must
+         mirror bylineTemplate() in assets/js/distillpub/template.v2.js exactly. -->
+    
+    <d-byline>
+      <div class="byline grid">
+        <div class="authors-affiliations grid">
+          <h3 style="grid-column: 1; grid-row: 1;">Authors</h3>
+          <h3></h3>
+          <h3>Affiliation</h3>
+          
+          
+          
+          <p class="author" style="grid-column: 1; grid-row: 2;">
+            <a class="name" href="https://heyyanshuman.com" rel="external nofollow noopener" target="_blank">Anshuman Mishra</a>
+          </p>
+          <p class="affiliation" style="grid-column: 3; grid-row: 2;">
+            <span class="affiliation">Independent researcher</span>
+          </p>
+          
+        </div>
+        <div>
+          <h3>Published</h3>
+          <!-- Match the AP-style month abbreviations in template.v2.js's `months` array. -->
+          
+          
+          <p>Sept. 11, 2026</p>
+        </div>
+      </div>
+    </d-byline>
+    
+
+    <d-article>
+      
+      <d-contents>
+        <nav class="l-text figcaption">
+          <h3>Contents</h3>
+          
+          <div>
+            <a href="#one-thread-per-row">One thread per row</a>
+          </div>
+          
+          
+          <div>
+            <a href="#"></a>
+          </div>
+          
+          <ul>
+            
+            <li>
+              <a href="#walking-over-one-row">Walking over one row</a>
+            </li>
+            
+            <li>
+              <a href="#cost-of-three-passes">Cost of three passes</a>
+            </li>
+            
+          </ul>
+          
+          
+          <div>
+            <a href="#removing-one-pass-over-the-row">Removing one pass over the row</a>
+          </div>
+          
+          
+          <div>
+            <a href="#"></a>
+          </div>
+          
+          <ul>
+            
+            <li>
+              <a href="#updating-statistics-online">Updating statistics online</a>
+            </li>
+            
+            <li>
+              <a href="#cost-of-two-passes">Cost of two passes</a>
+            </li>
+            
+          </ul>
+          
+          
+          <div>
+            <a href="#one-warp-per-row">One warp per row</a>
+          </div>
+          
+          
+          <div>
+            <a href="#"></a>
+          </div>
+          
+          <ul>
+            
+            <li>
+              <a href="#splitting-a-row-across-the-warp">Splitting a row across the warp</a>
+            </li>
+            
+            <li>
+              <a href="#cost-after-coalescing">Cost after coalescing</a>
+            </li>
+            
+            <li>
+              <a href="#turning-the-complete-algorithm-into-code">Turning the complete algorithm into code</a>
+            </li>
+            
+          </ul>
+          
+          
+          <div>
+            <a href="#main-takeaways">Main takeaways</a>
+          </div>
+          
+          
+        </nav>
+      </d-contents>
+      
+      <p>The code for this chapter lives in <a href="https://github.com/athleticcoder21/inference-book/tree/main/kernels/softmax" rel="external nofollow noopener" target="_blank"><code class="language-plaintext highlighter-rouge">kernels/softmax/</code></a>.</p>
+
+<p>Softmax is a very important part of attention mechanism in transformers. It converts raw attention scores to a probability distribution, where each element in the output is between 0 and 1, and sum of all elements is 1.</p>
+
+<p>Formally, for an input vector $\mathbf{x}$ containing $N$ elements, Softmax is defined as:</p>
+
+\[\operatorname{softmax}(\mathbf{x})_i
+  = \frac{e^{x_i}}
+         {\displaystyle\sum_{j=0}^{N-1} e^{x_j}},
+  \qquad i \in \{0, \ldots, N-1\}.\]
+
+<figure>
+  
+  <picture>
+    <!-- Auto scaling with imagemagick -->
+    <!--
+      See https://www.debugbear.com/blog/responsive-images#w-descriptors-and-the-sizes-attribute and
+      https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images for info on defining 'sizes' for responsive images
+    -->
+    
+    <img src="/inference-book/assets/softmax/softmax-header.png" class="img-fluid" width="100%" height="auto" alt="A hand-drawn row of four input scores passing through Softmax to become four nonnegative probabilities whose sum is one." loading="lazy" onerror="this.onerror=null; $('.responsive-img-srcset').remove();">
+  </picture>
+  
+  
+</figure>
+
+<p>Here, $x_i$ is the $i$-th element of the input and the denominator is the sum of the exponentials of all elements in the vector.</p>
+
+<p>There is one problem with implementing this equation directly. The exponential function grows very quickly, so a large value of $x_i$ can make $e^{x_i}$ overflow. To make the computation numerically stable, we first find the maximum value in the input vector:</p>
+
+\[m = \max_{0 \leq j &lt; N} x_j.\]
+
+<p>We then subtract $m$ from every element before taking its exponential:</p>
+
+\[\operatorname{softmax}(\mathbf{x})_i
+  = \frac{e^{x_i-m}}
+         {\displaystyle\sum_{j=0}^{N-1} e^{x_j-m}},
+  \qquad i \in \{0, \ldots, N-1\}.\]
+
+<p>If you notice, subtracting the same value from every element does not change the final probability distribution. But now the largest exponent is $e^0=1$, which prevents the exponential from overflowing and gives us a numerically stable implementation.</p>
+
+<h2 id="one-thread-per-row">One thread per row</h2>
+
+<h3 id="walking-over-one-row">Walking over one row</h3>
+
+<p>Assume our input is a matrix $\mathbf{X[M,N]}$, let’s talk about how we write this kernel. Let’s start with the simplest approach.  The first thing that might come to mind is to assign one thread to each row.
+and have it apply Softmax independently
+to every row i.e. we are really calculating Softmax for $M$ different vectors,
+each containing $N$ elements.</p>
+
+<p>That thread first walks over its row to find the maximum value, walks over
+it again to calculate the denominator, and then makes one final pass to write
+the output.</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>parallel for row = 0 to M - 1:
+    maximum = -infinity
+
+    for column = 0 to N - 1:
+        maximum = max(maximum, X[row, column])
+
+    denominator = 0
+
+    for column = 0 to N - 1:
+        denominator += exp(X[row, column] - maximum)
+
+    for column = 0 to N - 1:
+        Y[row, column] = exp(X[row, column] - maximum) / denominator
+</code></pre></div></div>
+
+<p>Pretty straightforward. Different rows are processed in parallel, but inside
+each row a single thread still does all the work sequentially. Before we try to
+improve that, let us understand how much work this algorithm actually performs.</p>
+
+<h3 id="cost-of-three-passes">Cost of three passes</h3>
+
+<p>Again, assume that the input and output use FP32, so every element occupies 4
+bytes. We will also assume that values are read from global memory on every
+pass.</p>
+
+<h4 id="computation">Computation</h4>
+
+<p>For one row, finding the maximum requires $N-1$ comparisons. Comparisons are
+not floating-point operations, so we keep them separate from the FLOP count.</p>
+
+<p>The second pass, which calculates the denominator, performs $N$ subtractions
+and $N-1$ additions.</p>
+
+<p>The third pass performs another $N$ subtractions and $N$
+divisions. Therefore, excluding the exponential function for a moment, the
+ordinary floating-point work for one row is</p>
+
+\[N+(N-1)+N+N = 4N-1 \quad \text{FLOPs}.\]
+
+<p>Across all $M$ rows, this becomes</p>
+
+\[M(4N-1) = 4MN-M \quad \text{FLOPs}.\]
+
+<p>We also evaluate the
+exponential twice for every element, giving us $2MN$ exponential evaluations.
+An exponential is not a single FLOP. It is a special function whose cost and
+throughput depend on the hardware, so folding it into the FLOP count would make
+the number look more precise than it really is.</p>
+
+<h4 id="memory-access">Memory access</h4>
+
+<p>The naive algorithm makes three complete passes over $\mathbf{X}$ and one pass
+to write $\mathbf{Y}$:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Operation</th>
+      <th style="text-align: right">Elements transferred</th>
+      <th style="text-align: right">Bytes transferred</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Read $\mathbf{X}$ to find the maximum</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td>Read $\mathbf{X}$ to calculate the denominator</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td>Read $\mathbf{X}$ to calculate the output</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td>Write $\mathbf{Y}$</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td><strong>Total</strong></td>
+      <td style="text-align: right"><strong>$4MN$</strong></td>
+      <td style="text-align: right"><strong>$16MN$</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Using only the ordinary floating-point operations, the arithmetic intensity is</p>
+
+\[\begin{aligned}
+AI(M,N)
+  &amp;= \frac{M(4N-1)}{16MN} \\
+  &amp;= \frac{4N-1}{16N}
+     \quad \text{FLOPs/byte}.
+\end{aligned}\]
+
+<p>For a large $N$,</p>
+
+\[AI(M,N) \approx \frac{4N}{16N}
+        = \frac{1}{4}
+        = 0.25 \quad \text{FLOPs/byte}.\]
+
+<p>So even before looking at how much parallelism we use, this is already a
+low-arithmetic-intensity algorithm. It performs roughly one ordinary
+floating-point operation for every 4 bytes transferred. The exponential
+evaluations certainly add computation, but they do not remove the three full
+reads of the input.</p>
+
+<aside class="callout"><strong>Why are exponentials not included in the FLOP count?</strong>
+FLOPs traditionally count basic floating-point operations such as addition,
+subtraction, multiplication, and division. Functions such as `exp` are
+implemented using multiple instructions or specialized hardware and can have
+very different throughput from those basic operations.
+
+If we use a simplified operation count and pretend that each exponential is one
+operation, the algorithm performs $6MN-M$ operations and has an operation
+intensity approaching $0.375$ operations/byte. That number can be useful for a
+rough comparison between our own kernels, but it should not be confused with a
+hardware-independent FLOP count.
+
+</aside>
+<p>There are two problems hiding inside this simple implementation:</p>
+
+<ul>
+  <li>
+    <p><strong>Unnecessary repeated iterations.</strong> We iterate over the same row three
+times: once to find the maximum, once to calculate the denominator, and once
+to write the output. Every input element is fetched from global memory three
+times. We also calculate its exponential in the second pass and then
+calculate the same exponential again in the third pass.</p>
+  </li>
+  <li>
+    <p><strong>Uncoalesced memory access.</strong> One thread owns one row, so neighboring
+threads in a warp read from different rows. We already studied this access
+pattern in the GEMV chapter, so we will not go into it again here. We will
+come back and fix it later.</p>
+  </li>
+</ul>
+
+<h2 id="removing-one-pass-over-the-row">Removing one pass over the row</h2>
+
+<h3 id="updating-statistics-online">Updating statistics online</h3>
+
+<p>Let’s double-click on the first problem and see if it is possible to find the
+maximum and calculate the denominator in the same pass.</p>
+
+<p>Our denominator is defined relative to
+the maximum value of the complete row, but while reading that row from left to
+right, we do not know the final maximum yet.</p>
+
+<p>Turns out, we do not need to know it in advance. Bear with me for a moment.</p>
+
+<p>Assume we have processed the row up to index $i$. The largest value we have
+seen so far is $m_1$. Since every exponential must be calculated relative to
+the maximum, our running denominator is</p>
+
+\[L_i
+  = e^{x_0-m_1}
+  + e^{x_1-m_1}
+  + \cdots
+  + e^{x_i-m_1}.\]
+
+<p>Now we move to index $i+1$ and discover that $x_{i+1}$ is larger than $m_1$.
+Let us call this new maximum $m_2$:</p>
+
+\[m_2 = x_{i+1}, \qquad m_2 &gt; m_1.\]
+
+<p>We have a problem. All the terms already stored in $L_i$ were calculated
+relative to $m_1$, but they now need to be relative to $m_2$. The corrected
+sum of the old elements should be</p>
+
+\[e^{x_0-m_2}
++ e^{x_1-m_2}
++ \cdots
++ e^{x_i-m_2}.\]
+
+<p>However it is solvable. We can use the multiplication property of exponentials:</p>
+
+\[e^a e^b = e^{a+b}.\]
+
+<p>Multiply the old running sum by $e^{m_1-m_2}$:</p>
+
+\[\begin{aligned}
+L_i e^{m_1-m_2}
+  &amp;= \left(
+       e^{x_0-m_1}
+       + e^{x_1-m_1}
+       + \cdots
+       + e^{x_i-m_1}
+     \right)e^{m_1-m_2} \\
+  &amp;= e^{x_0-m_1}e^{m_1-m_2}
+     + e^{x_1-m_1}e^{m_1-m_2}
+     + \cdots
+     + e^{x_i-m_1}e^{m_1-m_2} \\
+  &amp;= e^{x_0-m_2}
+     + e^{x_1-m_2}
+     + \cdots
+     + e^{x_i-m_2}.
+\end{aligned}\]
+
+<p><strong>Boom!</strong></p>
+
+<p>With one multiplication, we corrected the contribution of every element we
+had already processed. All that remains is to add the contribution of the new
+maximum itself:</p>
+
+\[e^{m_2-m_2}=e^0=1.\]
+
+<p>Therefore, when we encounter a new maximum, the update is simply</p>
+
+\[L_{i+1} = L_i e^{m_1-m_2}+1.\]
+
+<p>And if $x_{i+1}$ is not a new maximum, there is nothing to correct. We keep
+$m_1$ and update the sum normally:</p>
+
+\[L_{i+1}=L_i+e^{x_{i+1}-m_1}.\]
+
+<p>That is the entire trick behind <strong>online Softmax</strong>. Instead of waiting until the
+end to learn the maximum, we update the maximum as we go and rescale the work
+we have already done whenever that maximum changes.</p>
+
+<p>That gives us the online algorithm:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>parallel for row = 0 to M - 1:
+    maximum = -infinity
+    denominator = 0
+
+    for column = 0 to N - 1:
+        current = X[row, column]
+
+        if current &gt; maximum:
+            denominator = denominator * exp(maximum - current) + 1
+            maximum = current
+        else:
+            denominator += exp(current - maximum)
+
+    for column = 0 to N - 1:
+        Y[row, column] = exp(X[row, column] - maximum) / denominator
+</code></pre></div></div>
+
+<p>We still need the final normalization pass, but the separate maximum and
+denominator passes have now become one. Our three-pass algorithm is down to two
+passes.</p>
+
+<h3 id="cost-of-two-passes">Cost of two passes</h3>
+
+<p>Let’s now analyze what this trick actually does to our algorithm.</p>
+
+<h4 id="computation-1">Computation</h4>
+
+<p>Let $R$ be the total number of times an element becomes a new running maximum
+across all $M$ rows. We process $MN$ elements in total. Now let us account for
+the work one operation at a time.</p>
+
+<ul>
+  <li>
+    <p>We compare every element with the running maximum. That gives us $MN$
+comparisons. We keep these separate because comparisons are not FLOPs.</p>
+  </li>
+  <li>
+    <p>Whether the element becomes a new maximum or not, we subtract one value from
+another to form the exponent. That gives us $MN$ subtractions, or $MN$
+FLOPs.</p>
+  </li>
+  <li>
+    <p>We evaluate one exponential for every element during the first pass. That
+gives us $MN$ exponential evaluations. As before, we track these separately
+from ordinary FLOPs.</p>
+  </li>
+  <li>
+    <p>We add one contribution to the running denominator for every element. That
+gives us $MN$ additions, or another $MN$ FLOPs.</p>
+  </li>
+  <li>
+    <p>Whenever an element becomes the new maximum, we multiply the old denominator
+by a correction factor. This happens $R$ times, giving us $R$
+multiplications, or $R$ FLOPs.</p>
+  </li>
+</ul>
+
+<p>Now we can add the ordinary floating-point work from the first pass:</p>
+
+\[\underbrace{MN}_{\text{subtractions}}
++ \underbrace{MN}_{\text{additions}}
++ \underbrace{R}_{\text{rescaling multiplications}}
+= 2MN+R \quad \text{FLOPs}.\]
+
+<p>We then make the normalization pass over all $MN$ elements:</p>
+
+<ul>
+  <li>Subtracting the final maximum contributes $MN$ FLOPs.</li>
+  <li>Evaluating the exponential contributes another $MN$ exponential
+evaluations.</li>
+  <li>Dividing by the denominator contributes $MN$ FLOPs.</li>
+</ul>
+
+<p>So the normalization pass contributes</p>
+
+\[\underbrace{MN}_{\text{subtractions}}
++ \underbrace{MN}_{\text{divisions}}
+= 2MN \quad \text{FLOPs}.\]
+
+<p>Finally, adding both passes together gives us</p>
+
+\[\begin{aligned}
+\text{FLOPs}_{\text{online}}
+  &amp;= (2MN+R)+2MN \\
+  &amp;= 4MN+R.
+\end{aligned}\]
+
+<p>We also perform $MN+MN=2MN$ exponential evaluations in total. So this
+optimization does not reduce the computational work. It adds $R$ rescaling
+multiplications in exchange for reading the input fewer times.</p>
+
+<h4 id="memory-access-1">Memory access</h4>
+
+<table>
+  <thead>
+    <tr>
+      <th>Operation</th>
+      <th style="text-align: right">Elements transferred</th>
+      <th style="text-align: right">Bytes transferred</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Read $\mathbf{X}$ to update the maximum and denominator</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td>Read $\mathbf{X}$ to calculate the output</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td>Write $\mathbf{Y}$</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td><strong>Total</strong></td>
+      <td style="text-align: right"><strong>$3MN$</strong></td>
+      <td style="text-align: right"><strong>$12MN$</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>We reduced the input reads from $3MN$ elements to $2MN$ elements. Including the
+output write, total memory traffic falls from $16MN$ bytes to $12MN$ bytes</p>
+
+<p>The arithmetic intensity is now approximately</p>
+
+\[\begin{aligned}
+AI_{\text{online}}(M,N)
+  &amp;\approx \frac{4MN+R}{12MN} \\
+  &amp;= \frac{1}{3}+\frac{R}{12MN}
+     \quad \text{FLOPs/byte}.
+\end{aligned}\]
+
+<p>Usually, only a small fraction of the elements become new running maxima, so
+$R \ll MN$. In that case,</p>
+
+\[AI_{\text{online}}(M,N) \approx \frac{1}{3}
+  \approx 0.333 \quad \text{FLOPs/byte}.\]
+
+<p>We moved from $0.25$ to approximately $0.333$ FLOPs/byte. <strong>Note that, this bump did not come
+from doing fewer FLOPs, we actually do a little more. It came from eliminating
+one complete read of the input matrix.</strong></p>
+
+<p>::: {.callout-note}</p>
+
+<p>Note that this bump did not come
+from doing fewer FLOPs, we actually do a little more. It came from eliminating
+one complete read of the input matrix.</p>
+
+<p>&lt;/aside&gt;</p>
+<h2 id="one-warp-per-row">One warp per row</h2>
+
+<h3 id="splitting-a-row-across-the-warp">Splitting a row across the warp</h3>
+
+<p>Alright, that’s one problem down. Let’s see if we can further optimize this kernel by leveraging <strong>coalesced memory access pattern.</strong></p>
+
+<p>As of now our kernel still assigns one entire row to one thread which is bad  because neighboring
+threads are reading the same column from different rows, so their addresses are
+$N$ elements apart. ( I recommend referring to GEMV kernel optimization chapter to further understand why)</p>
+
+<p>We have to somehow reimplement this algorithm so that instead of giving
+one row to one thread, let us give one row to an entire thread block:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>block 0 -&gt; row 0
+block 1 -&gt; row 1
+block 2 -&gt; row 2
+...
+</code></pre></div></div>
+
+<p>Let’s assume that one block owns one row. But we still need to decide how the columns of
+that row are divided among the threads.</p>
+
+<p>Assume that our block has $T$ threads. The most natural mapping is:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; columns 0, T, 2T, ...
+thread 1 -&gt; columns 1, T + 1, 2T + 1, ...
+thread 2 -&gt; columns 2, T + 2, 2T + 2, ...
+...
+</code></pre></div></div>
+
+<p>Or, written as one indexing rule,</p>
+
+\[\text{column} = \text{threadIdx.x} + kT,
+\qquad k=0,1,2,\ldots\]
+
+<p>Let us use a tiny example before jumping to a real warp. Say our row has <em>eight</em>
+elements and the block has <em>four</em> threads.</p>
+
+<p>During the first loop iteration, the four threads read</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; x[0]
+thread 1 -&gt; x[1]
+thread 2 -&gt; x[2]
+thread 3 -&gt; x[3]
+</code></pre></div></div>
+
+<p>During the next iteration, every thread moves forward by four:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; x[4]
+thread 1 -&gt; x[5]
+thread 2 -&gt; x[6]
+thread 3 -&gt; x[7]
+</code></pre></div></div>
+
+<figure>
+  
+  <picture>
+    <!-- Auto scaling with imagemagick -->
+    <!--
+      See https://www.debugbear.com/blog/responsive-images#w-descriptors-and-the-sizes-attribute and
+      https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images for info on defining 'sizes' for responsive images
+    -->
+    
+    <img src="/inference-book/assets/softmax/coalesced_row_access.svg" class="img-fluid" width="100%" height="auto" alt="A four-thread teaching block reading an eight-element Softmax row. Threads zero through three first read adjacent columns zero through three, then advance by four to read adjacent columns four through seven." loading="lazy" onerror="this.onerror=null; $('.responsive-img-srcset').remove();">
+  </picture>
+  
+  
+</figure>
+
+<p>If you notice, one thread jumps by $T$ elements over time, but neighboring
+threads read neighboring elements at the same instant.</p>
+
+<p>For a real warp, $T=32$. The first loop iteration reads columns 0 through 31,
+the second reads columns 32 through 63, and so on. Every iteration therefore
+produces one coalesced chunk of 32 FP32 values.</p>
+
+<p>Great, this is the access pattern we were looking for. Except we also broke something.  Now every thread sees only a slice of
+the row.</p>
+
+<p>Let us use this row:</p>
+
+\[\mathbf{x}=[3,1,2,0,6,4,5,1].\]
+
+<p>With four threads, the work is divided like this:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; [x0, x4] -&gt; [3, 6]
+thread 1 -&gt; [x1, x5] -&gt; [1, 4]
+thread 2 -&gt; [x2, x6] -&gt; [2, 5]
+thread 3 -&gt; [x3, x7] -&gt; [0, 1]
+</code></pre></div></div>
+
+<p>Each thread can run online Softmax on its two values. But it only produces a
+<em>local</em> maximum and a <em>local</em> denominator:</p>
+
+<figure>
+  
+  <picture>
+    <!-- Auto scaling with imagemagick -->
+    <!--
+      See https://www.debugbear.com/blog/responsive-images#w-descriptors-and-the-sizes-attribute and
+      https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images for info on defining 'sizes' for responsive images
+    -->
+    
+    <img src="/inference-book/assets/softmax/local_online_statistics.svg" class="img-fluid" width="100%" height="auto" alt="Four threads process different slices of one row and produce four local maxima and four local denominators." loading="lazy" onerror="this.onerror=null; $('.responsive-img-srcset').remove();">
+  </picture>
+  
+  
+</figure>
+
+<p>So now we have</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>local maxima       = [6, 4, 5, 1]
+local denominators = [1.0498, 1.0498, 1.0498, 1.3679]
+</code></pre></div></div>
+
+<h4 id="reducing-the-maximum">Reducing the maximum</h4>
+
+<p>What we actually need is one maximum and one denominator for the complete row.
+For that we need to turn</p>
+
+\[[6,4,5,1]\]
+
+<p>into a single value. We could ask thread 0 to read the other three values and
+find the maximum sequentially. But then we are back to making one thread do all
+the work.</p>
+
+<p>Instead, let the threads compare pairs of values.</p>
+
+<p>In the first round, we compare values that are two positions apart:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; max(6, 5) = 6
+thread 1 -&gt; max(4, 1) = 4
+</code></pre></div></div>
+
+<p>Four candidates have now become two. In the second round, we compare the two
+remaining values:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; max(6, 4) = 6
+</code></pre></div></div>
+
+<p>And we are done. Thread 0 now holds the maximum of the complete row.</p>
+
+<p>This pattern is called a <strong>reduction</strong>. At every round, half of the candidates
+disappear. Our four-value example takes two rounds. A warp has 32 values, so it
+takes five:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>offset 16 -&gt; 32 values become 16
+offset  8 -&gt; 16 values become 8
+offset  4 -&gt;  8 values become 4
+offset  2 -&gt;  4 values become 2
+offset  1 -&gt;  2 values become 1
+</code></pre></div></div>
+
+<p>Notice that we still perform 31 comparisons to reduce 32 values. The number of
+comparisons did not magically shrink. The difference is that those comparisons
+happen in five parallel rounds instead of one chain of 31 comparisons.</p>
+
+<h4 id="correcting-the-local-denominators">Correcting the local denominators</h4>
+
+<p>With the row maximum in hand, the next step is to add the local denominators.
+But before we do that, notice that thread 0 calculated its denominator relative
+to 6, thread 1 used 4, thread 2 used 5, and thread 3 used 1:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; 1.0498 is relative to 6
+thread 1 -&gt; 1.0498 is relative to 4
+thread 2 -&gt; 1.0498 is relative to 5
+thread 3 -&gt; 1.3679 is relative to 1
+</code></pre></div></div>
+
+<p>Adding these numbers directly would be wrong because their exponentials use
+different maxima. Before adding them, we need to express all four denominators
+relative to the row maximum, which is 6.</p>
+
+<p>We already learned how to do that in online Softmax. If a thread has local
+maximum $m_t$ and local denominator $L_t$, we correct it using</p>
+
+\[L_t^{\text{corrected}}=L_t e^{m_t-m},\]
+
+<p>where $m$ is the maximum of the complete row.</p>
+
+<p>Let us apply this to every thread:</p>
+
+\[\begin{aligned}
+\text{thread 0}:&amp;\quad 1.0498e^{6-6} \approx 1.0498,\\
+\text{thread 1}:&amp;\quad 1.0498e^{4-6} \approx 0.1421,\\
+\text{thread 2}:&amp;\quad 1.0498e^{5-6} \approx 0.3862,\\
+\text{thread 3}:&amp;\quad 1.3679e^{1-6} \approx 0.0092.
+\end{aligned}\]
+
+<figure>
+  
+  <picture>
+    <!-- Auto scaling with imagemagick -->
+    <!--
+      See https://www.debugbear.com/blog/responsive-images#w-descriptors-and-the-sizes-attribute and
+      https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images for info on defining 'sizes' for responsive images
+    -->
+    
+    <img src="/inference-book/assets/softmax/max_and_sum_reductions.svg" class="img-fluid" width="100%" height="auto" alt="Four local maxima are reduced to row maximum six. Each local denominator is then corrected so that all four use the same row maximum." loading="lazy" onerror="this.onerror=null; $('.responsive-img-srcset').remove();">
+  </picture>
+  
+  
+</figure>
+
+<p>After this correction, all four denominators are relative to the same maximum,
+so the next step is to add them.</p>
+
+<h4 id="reducing-the-sum">Reducing the sum</h4>
+
+<p>The sum reduction follows the exact same pattern. We just replace <code class="language-plaintext highlighter-rouge">max</code> with
+addition. Our corrected values are</p>
+
+\[[1.0498,0.1421,0.3862,0.0092].\]
+
+<p>First round:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; 1.0498 + 0.3862 = 1.4360
+thread 1 -&gt; 0.1421 + 0.0092 = 0.1513
+</code></pre></div></div>
+
+<p>Second round:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>thread 0 -&gt; 1.4360 + 0.1513 = 1.5873
+</code></pre></div></div>
+
+<figure>
+  
+  <picture>
+    <!-- Auto scaling with imagemagick -->
+    <!--
+      See https://www.debugbear.com/blog/responsive-images#w-descriptors-and-the-sizes-attribute and
+      https://developer.mozilla.org/en-US/docs/Learn/HTML/Multimedia_and_embedding/Responsive_images for info on defining 'sizes' for responsive images
+    -->
+    
+    <img src="/inference-book/assets/softmax/sum_reduction_steps.svg" class="img-fluid" width="100%" height="auto" alt="A four-lane sum reduction. Two pairs are added in the first round, and the remaining pair is added in the second round to produce 1.5873." loading="lazy" onerror="this.onerror=null; $('.responsive-img-srcset').remove();">
+  </picture>
+  
+  
+</figure>
+
+<p>So the denominator for the complete row is</p>
+
+\[L=1.5873.\]
+
+<p>We finally have everything required to calculate Softmax: the row maximum is 6
+and the row denominator is 1.5873. Every thread can now revisit its columns and
+write the corresponding outputs.</p>
+
+<h4 id="exchanging-values-between-threads">Exchanging values between threads</h4>
+
+<p>We kept saying that thread 0 reads a value from thread 2, then thread 1 reads a
+value from thread 3. But all these partial values live in registers owned by
+different threads. How does one thread read another thread’s register?</p>
+
+<p>Remember <code class="language-plaintext highlighter-rouge">__shfl_down_sync</code>? which we used for exact such usage in GEMV kernel worklog. It lets a thread read a
+register value held by another thread in the same warp.</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__device__</span> <span class="n">__forceinline__</span> <span class="kt">float</span> <span class="nf">warpReduceMax</span><span class="p">(</span><span class="kt">float</span> <span class="n">value</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">offset</span> <span class="o">=</span> <span class="mi">16</span><span class="p">;</span> <span class="n">offset</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">;</span> <span class="n">offset</span> <span class="o">/=</span> <span class="mi">2</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="n">max</span><span class="p">(</span>
+            <span class="n">value</span><span class="p">,</span>
+            <span class="n">__shfl_down_sync</span><span class="p">(</span><span class="mh">0xffffffff</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">offset</span><span class="p">)</span>
+        <span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">value</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="n">__device__</span> <span class="n">__forceinline__</span> <span class="kt">float</span> <span class="nf">warpReduceSum</span><span class="p">(</span><span class="kt">float</span> <span class="n">value</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">offset</span> <span class="o">=</span> <span class="mi">16</span><span class="p">;</span> <span class="n">offset</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">;</span> <span class="n">offset</span> <span class="o">/=</span> <span class="mi">2</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">value</span> <span class="o">+=</span> <span class="n">__shfl_down_sync</span><span class="p">(</span><span class="mh">0xffffffff</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">offset</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">value</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<aside class="callout">
+  <p><strong>What does <strong>forceinline</strong> mean?</strong></p>
+
+  <p>Normally, calling a function means jumping to that function and returning when
+it is done. When a function is <strong>inlined</strong>, the compiler instead places the
+function’s instructions directly where it is called.</p>
+
+  <p><code class="language-plaintext highlighter-rouge">__forceinline__</code> tells the CUDA compiler to inline the function instead of
+deciding for itself. That makes sense for helpers such as <code class="language-plaintext highlighter-rouge">warpReduceMax</code> and
+<code class="language-plaintext highlighter-rouge">warpReduceSum</code>: they are small, called frequently, and we do not want a
+function call around a five-step reduction.</p>
+
+  <p>Inlining does not change what the function computes or how threads cooperate.
+It only changes how the compiler places its instructions in the generated GPU
+code. The trade-off is that forcing a large function to be inlined can make the
+compiled code much bigger, so we mainly use it for small helpers like these.</p>
+
+</aside>
+
+<aside class="callout">
+  <p><strong>What does __shfl_down_sync actually do?</strong>
+Let us unpack this line:</p>
+
+  <div class="language-cpp highlighter-rouge">
+<div class="highlight"><pre class="highlight"><code><span class="n">__shfl_down_sync</span><span class="p">(</span><span class="mh">0xffffffff</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">offset</span><span class="p">)</span>
+</code></pre></div>  </div>
+
+  <ul>
+    <li>
+      <p><code class="language-plaintext highlighter-rouge">0xffffffff</code> is a 32-bit mask with every bit set to 1. Each bit represents
+one lane, so this says that all 32 lanes in the warp are participating in the
+shuffle. This is valid here because our complete warp executes the reduction.
+If only some lanes participated, the mask would need to describe that subset.</p>
+    </li>
+    <li>
+      <p><code class="language-plaintext highlighter-rouge">value</code> is the number held by the current lane. Since every lane calls this
+function, every lane passes its own number. The function then gives each lane
+the <code class="language-plaintext highlighter-rouge">value</code> from the lane <code class="language-plaintext highlighter-rouge">offset</code> positions ahead of it. For example, when
+<code class="language-plaintext highlighter-rouge">offset</code> is 2, lane 0 gets lane 2’s <code class="language-plaintext highlighter-rouge">value</code>.</p>
+    </li>
+    <li>
+      <p><code class="language-plaintext highlighter-rouge">offset</code> tells a lane how far down the warp it should read. Lane $l$ receives
+the value held by lane $l+\text{offset}$.</p>
+    </li>
+  </ul>
+
+  <p>For our four-value example, start with</p>
+
+  <div class="language-text highlighter-rouge">
+<div class="highlight"><pre class="highlight"><code>lane           0  1  2  3
+value          6  4  5  1
+</code></pre></div>  </div>
+
+  <p>At <code class="language-plaintext highlighter-rouge">offset = 2</code>, we can think of the call as</p>
+
+  <div class="language-cpp highlighter-rouge">
+<div class="highlight"><pre class="highlight"><code><span class="kt">float</span> <span class="n">other_value</span> <span class="o">=</span> <span class="n">__shfl_down_sync</span><span class="p">(</span><span class="mh">0xffffffff</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="mi">2</span><span class="p">);</span>
+</code></pre></div>  </div>
+
+  <p>Lane 0 gets lane 2’s copy of <code class="language-plaintext highlighter-rouge">value</code>, which is 5. Lane 1 gets lane 3’s copy,
+which is 1. The shuffle only fetches those partner values. The <code class="language-plaintext highlighter-rouge">max</code> outside it
+performs the actual update:</p>
+
+  <div class="language-text highlighter-rouge">
+<div class="highlight"><pre class="highlight"><code>lane 0: value = max(6, 5) = 6
+lane 1: value = max(4, 1) = 4
+</code></pre></div>  </div>
+
+  <p>Our remaining values are now <code class="language-plaintext highlighter-rouge">[6, 4]</code>. At <code class="language-plaintext highlighter-rouge">offset = 1</code>, lane 0 receives lane
+1’s updated value, which is 4:</p>
+
+  <div class="language-text highlighter-rouge">
+<div class="highlight"><pre class="highlight"><code>lane 0: value = max(6, 4) = 6
+</code></pre></div>  </div>
+
+  <p>That is all the intrinsic is doing. <code class="language-plaintext highlighter-rouge">__shfl_down_sync</code> moves the partner value;
+the surrounding <code class="language-plaintext highlighter-rouge">max</code> or addition decides how that value updates the running
+result. In a real 32-lane warp, only the lower half contains useful combined
+results after each round, but all lanes named by the mask still execute the
+shuffle.</p>
+
+</aside>
+<p>For an offset of 16, lane 0 reads lane 16, lane 1 reads lane 17, and so on. The
+offset is then halved until lane 0 contains the final result. We do not need to
+move these values through global memory or even shared memory. They travel
+directly between registers inside the warp.</p>
+
+<p>Only lane 0 owns the final reduced value. Since every lane needs the row maximum
+and denominator during normalization, lane 0 broadcasts them back to the warp.</p>
+
+<p>Alright, we can now write the complete algorithm:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>one warp processes one row:
+    every lane runs online Softmax over columns
+        lane_id, lane_id + 32, lane_id + 64, ...
+
+    row_max = reduce_max(local_max)
+    broadcast row_max from lane 0
+
+    corrected_denominator =
+        local_denominator * exp(local_max - row_max)
+
+    row_denominator = reduce_sum(corrected_denominator)
+    broadcast row_denominator from lane 0
+
+    every lane revisits its columns and writes:
+        exp(X[row, column] - row_max) / row_denominator
+</code></pre></div></div>
+
+<p>For now, we are deliberately using one warp per row. If we later use multiple
+warps for one row, a warp shuffle alone will not be enough because shuffles do
+not cross warp boundaries. We would then need one additional reduction through
+shared memory. Let us not add that machinery until we actually need it.</p>
+
+<h3 id="cost-after-coalescing">Cost after coalescing</h3>
+
+<h4 id="memory-access-2">Memory access</h4>
+
+<p>Let us start with memory. The online algorithm still reads every input twice
+and writes every output once:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Operation</th>
+      <th style="text-align: right">Elements transferred</th>
+      <th style="text-align: right">Bytes transferred</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>First read of $\mathbf{X}$</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td>Second read of $\mathbf{X}$</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td>Write $\mathbf{Y}$</td>
+      <td style="text-align: right">$MN$</td>
+      <td style="text-align: right">$4MN$</td>
+    </tr>
+    <tr>
+      <td><strong>Total useful traffic</strong></td>
+      <td style="text-align: right"><strong>$3MN$</strong></td>
+      <td style="text-align: right"><strong>$12MN$</strong></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>So the number of useful bytes did not change. What changed is how efficiently
+those bytes travel through the memory system.</p>
+
+<p>Recall the transaction efficiency from the GEMV chapter. With one thread per
+row, a warp could use only 128 bytes out of 1024 bytes requested from the memory
+system:</p>
+
+\[\eta_{\text{one thread per row}}
+  =\frac{128}{1024}
+  =\frac{1}{8}
+  =12.5\%.\]
+
+<p>With one warp reading across one row, the same 128 useful bytes occupy four
+32-byte sectors:</p>
+
+\[\eta_{\text{one warp per row}}
+  =\frac{128}{128}
+  =1.\]
+
+<p>Under this simplified transaction model, the effective traffic changes from</p>
+
+\[\frac{12MN}{1/8}=96MN \quad \text{bytes}\]
+
+<p>to</p>
+
+\[\frac{12MN}{1}=12MN \quad \text{bytes}.\]
+
+<p>That is up to an $8\times$ improvement in memory-transaction efficiency. It
+does not mean that the kernel must become exactly $8\times$ faster. Cache hits,
+alignment, row size, exponentials, and the reduction work all affect the final
+runtime. But we have stopped throwing away seven out of every eight bytes moved
+by our simplified model.</p>
+
+<p>Ignoring the small reduction overhead for a moment, the effective arithmetic
+intensity moves from</p>
+
+\[AI_{\text{uncoalesced}}
+  \approx\frac{4MN}{96MN}
+  =\frac{1}{24}
+  \approx0.0417\ \text{FLOPs/byte}\]
+
+<p>to</p>
+
+\[AI_{\text{coalesced}}
+  \approx\frac{4MN}{12MN}
+  =\frac{1}{3}
+  \approx0.333\ \text{FLOPs/byte}.\]
+
+<p><strong>Boom!</strong></p>
+
+<p>We did not change Softmax’s theoretical arithmetic intensity here. We simply
+stopped the bad access pattern from reducing its <em>effective</em> arithmetic
+intensity.</p>
+
+<h4 id="computation-and-communication">Computation and communication</h4>
+
+<p>Of course, the reductions are not free. Let the warp size be $W=32$:</p>
+
+<ul>
+  <li>Finding the row maximum requires $W-1=31$ comparisons.</li>
+  <li>Correcting the local denominators requires $W$ subtractions, $W$
+exponentials, and $W$ multiplications.</li>
+  <li>Reducing the corrected denominators requires $W-1=31$ additions.</li>
+</ul>
+
+<p>The ordinary floating-point overhead per row is therefore</p>
+
+\[\underbrace{W}_{\text{correction subtractions}}
++\underbrace{W}_{\text{correction multiplications}}
++\underbrace{W-1}_{\text{reduction additions}}
+=3W-1 \quad \text{FLOPs}.\]
+
+<p>Across all $M$ rows, that is</p>
+
+\[M(3W-1) \quad \text{additional FLOPs},\]
+
+<p>plus $MW$ additional exponential evaluations. For rows containing hundreds or
+thousands of elements, this fixed amount of work is small compared with the
+work across all $MN$ elements.</p>
+
+<aside class="callout">
+  <p><strong>Communication cost of the warp algorithm</strong></p>
+
+  <p>Let us first count the communication in our four-thread example.</p>
+
+  <p>The maximum reduction took two rounds. In the first round, threads 0 and 1 read
+from threads 2 and 3. In the second round, thread 0 read the remaining value
+from thread 1. Once thread 0 had the maximum, it broadcast that value to the
+other threads. So finding and sharing the maximum required</p>
+
+\[\underbrace{2}_{\text{reduce maximum}}
++\underbrace{1}_{\text{broadcast maximum}}
+=3\]
+
+  <p>communication steps.</p>
+
+  <p>We then repeated the same pattern for the denominator: two rounds to add the
+four partial denominators and one broadcast to share the result. The complete
+Softmax calculation therefore required</p>
+
+\[\underbrace{2}_{\text{reduce maximum}}
++\underbrace{1}_{\text{broadcast maximum}}
++\underbrace{2}_{\text{reduce denominator}}
++\underbrace{1}_{\text{broadcast denominator}}
+=6\]
+
+  <p>warp-level communication steps for four threads.</p>
+
+  <p>Now we can generalize. Every reduction round cuts the number of remaining
+values in half. Reducing $W$ values therefore takes
+$\lceil\log_2 W\rceil$ rounds. Softmax performs two reductions and two
+broadcasts, giving</p>
+
+\[C_{\text{comm}}(W)
+=2\left\lceil\log_2 W\right\rceil+2.\]
+
+  <p>For a full warp of 32 threads,</p>
+
+\[C_{\text{comm}}(32)=2(5)+2=12.\]
+
+  <p>Those 12 steps are five shuffles to find the maximum, one broadcast of the
+maximum, five shuffles to add the denominators, and one broadcast of the final
+denominator.</p>
+
+  <p>All 32 lanes perform each step together. We are not sending 32 messages one
+after another. The values also move directly between registers, so none of
+this communication is added to the $12MN$ bytes moving through global memory.</p>
+
+  <p>If one shuffle takes $t_{\text{shuffle}}$, the communication time for one row
+is approximately</p>
+
+\[T_{\text{comm,row}}
+\approx
+\left(2\left\lceil\log_2 W\right\rceil+2\right)t_{\text{shuffle}}.\]
+
+</aside>
+
+<p>Previously, one thread handled all $N$ elements in each pass. Now each lane
+handles only about $\lceil N/W\rceil$ elements per pass, followed by the fixed
+communication cost above.</p>
+
+<p>We added a little communication inside the warp, but in return we got coalesced
+memory access and 32 threads working on the row together. That is a pretty good
+deal for a memory-bound kernel.</p>
+
+<h3 id="turning-the-complete-algorithm-into-code">Turning the complete algorithm into code</h3>
+
+<p>Alright, we now have every piece of the final kernel. One block contains exactly
+one warp, and one warp owns one row. Lane 0 handles columns
+$0,32,64,\ldots$, lane 1 handles columns $1,33,65,\ldots$, and so on.</p>
+
+<p>During the first pass, every lane keeps its own maximum and denominator in
+registers. The warp combines those partial results, broadcasts the two row-wide
+values, and makes one final coalesced pass to write the output.</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#include</span> <span class="cpf">&lt;cuda_runtime.h&gt;</span><span class="cp">
+#include</span> <span class="cpf">&lt;math_constants.h&gt;</span><span class="cp">
+</span>
+<span class="n">__device__</span> <span class="n">__forceinline__</span> <span class="kt">float</span> <span class="nf">warpReduceMax</span><span class="p">(</span><span class="kt">float</span> <span class="n">value</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">offset</span> <span class="o">=</span> <span class="mi">16</span><span class="p">;</span> <span class="n">offset</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">;</span> <span class="n">offset</span> <span class="o">/=</span> <span class="mi">2</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="n">fmaxf</span><span class="p">(</span>
+            <span class="n">value</span><span class="p">,</span>
+            <span class="n">__shfl_down_sync</span><span class="p">(</span><span class="mh">0xffffffffu</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">offset</span><span class="p">)</span>
+        <span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">value</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="n">__device__</span> <span class="n">__forceinline__</span> <span class="kt">float</span> <span class="nf">warpReduceSum</span><span class="p">(</span><span class="kt">float</span> <span class="n">value</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">offset</span> <span class="o">=</span> <span class="mi">16</span><span class="p">;</span> <span class="n">offset</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">;</span> <span class="n">offset</span> <span class="o">/=</span> <span class="mi">2</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">value</span> <span class="o">+=</span> <span class="n">__shfl_down_sync</span><span class="p">(</span><span class="mh">0xffffffffu</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">offset</span><span class="p">);</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">value</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="n">__global__</span> <span class="kt">void</span> <span class="nf">softmax_warp_kernel</span><span class="p">(</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">input</span><span class="p">,</span>
+    <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">output</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">M</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">N</span>
+<span class="p">)</span> <span class="p">{</span>
+    <span class="c1">// One block contains one warp, and one warp owns one row.</span>
+    <span class="kt">int</span> <span class="n">row</span> <span class="o">=</span> <span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">lane</span> <span class="o">=</span> <span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">row</span> <span class="o">&gt;=</span> <span class="n">M</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">input_row</span> <span class="o">=</span> <span class="n">input</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">N</span><span class="p">;</span>
+    <span class="kt">float</span><span class="o">*</span> <span class="n">output_row</span> <span class="o">=</span> <span class="n">output</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">N</span><span class="p">;</span>
+
+    <span class="kt">float</span> <span class="n">local_max</span> <span class="o">=</span> <span class="o">-</span><span class="n">CUDART_INF_F</span><span class="p">;</span>
+    <span class="kt">float</span> <span class="n">local_denominator</span> <span class="o">=</span> <span class="mf">0.0f</span><span class="p">;</span>
+
+    <span class="c1">// First coalesced pass: compute online statistics for this lane.</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">column</span> <span class="o">=</span> <span class="n">lane</span><span class="p">;</span> <span class="n">column</span> <span class="o">&lt;</span> <span class="n">N</span><span class="p">;</span> <span class="n">column</span> <span class="o">+=</span> <span class="n">warpSize</span><span class="p">)</span> <span class="p">{</span>
+        <span class="kt">float</span> <span class="n">current</span> <span class="o">=</span> <span class="n">input_row</span><span class="p">[</span><span class="n">column</span><span class="p">];</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">current</span> <span class="o">&gt;</span> <span class="n">local_max</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">local_denominator</span> <span class="o">*=</span> <span class="n">expf</span><span class="p">(</span><span class="n">local_max</span> <span class="o">-</span> <span class="n">current</span><span class="p">);</span>
+            <span class="n">local_max</span> <span class="o">=</span> <span class="n">current</span><span class="p">;</span>
+        <span class="p">}</span>
+
+        <span class="n">local_denominator</span> <span class="o">+=</span> <span class="n">expf</span><span class="p">(</span><span class="n">current</span> <span class="o">-</span> <span class="n">local_max</span><span class="p">);</span>
+    <span class="p">}</span>
+
+    <span class="c1">// Reduce the local maxima. The complete result lands in lane 0.</span>
+    <span class="kt">float</span> <span class="n">row_max</span> <span class="o">=</span> <span class="n">warpReduceMax</span><span class="p">(</span><span class="n">local_max</span><span class="p">);</span>
+
+    <span class="c1">// Broadcast the row maximum from lane 0 to every lane.</span>
+    <span class="n">row_max</span> <span class="o">=</span> <span class="n">__shfl_sync</span><span class="p">(</span><span class="mh">0xffffffffu</span><span class="p">,</span> <span class="n">row_max</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
+
+    <span class="c1">// Put every local denominator on the same scale.</span>
+    <span class="kt">float</span> <span class="n">corrected_denominator</span> <span class="o">=</span>
+        <span class="n">local_denominator</span> <span class="o">*</span> <span class="nf">expf</span><span class="p">(</span><span class="n">local_max</span> <span class="o">-</span> <span class="n">row_max</span><span class="p">);</span>
+
+    <span class="c1">// Reduce the corrected denominators and broadcast their sum.</span>
+    <span class="kt">float</span> <span class="n">row_denominator</span> <span class="o">=</span> <span class="n">warpReduceSum</span><span class="p">(</span><span class="n">corrected_denominator</span><span class="p">);</span>
+    <span class="n">row_denominator</span> <span class="o">=</span>
+        <span class="n">__shfl_sync</span><span class="p">(</span><span class="mh">0xffffffffu</span><span class="p">,</span> <span class="n">row_denominator</span><span class="p">,</span> <span class="mi">0</span><span class="p">);</span>
+
+    <span class="c1">// Second coalesced pass: normalize and write the row.</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">column</span> <span class="o">=</span> <span class="n">lane</span><span class="p">;</span> <span class="n">column</span> <span class="o">&lt;</span> <span class="n">N</span><span class="p">;</span> <span class="n">column</span> <span class="o">+=</span> <span class="n">warpSize</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">output_row</span><span class="p">[</span><span class="n">column</span><span class="p">]</span> <span class="o">=</span>
+            <span class="n">expf</span><span class="p">(</span><span class="n">input_row</span><span class="p">[</span><span class="n">column</span><span class="p">]</span> <span class="o">-</span> <span class="n">row_max</span><span class="p">)</span> <span class="o">/</span> <span class="n">row_denominator</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kt">void</span> <span class="nf">launch_softmax</span><span class="p">(</span>
+    <span class="k">const</span> <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">input</span><span class="p">,</span>
+    <span class="kt">float</span><span class="o">*</span> <span class="n">__restrict__</span> <span class="n">output</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">M</span><span class="p">,</span>
+    <span class="kt">int</span> <span class="n">N</span>
+<span class="p">)</span> <span class="p">{</span>
+    <span class="k">constexpr</span> <span class="kt">int</span> <span class="n">threads_per_block</span> <span class="o">=</span> <span class="mi">32</span><span class="p">;</span>
+
+    <span class="n">dim3</span> <span class="n">block_size</span><span class="p">(</span><span class="n">threads_per_block</span><span class="p">);</span>
+    <span class="n">dim3</span> <span class="n">grid_size</span><span class="p">(</span><span class="n">M</span><span class="p">);</span>
+
+    <span class="n">softmax_warp_kernel</span><span class="o">&lt;&lt;&lt;</span><span class="n">grid_size</span><span class="p">,</span> <span class="n">block_size</span><span class="o">&gt;&gt;&gt;</span><span class="p">(</span>
+        <span class="n">input</span><span class="p">,</span>
+        <span class="n">output</span><span class="p">,</span>
+        <span class="n">M</span><span class="p">,</span>
+        <span class="n">N</span>
+    <span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>The launcher uses exactly 32 threads because the reduction helpers communicate
+inside one warp. The kernel assumes that every row contains at least one
+element. A row can be wider than 32 elements; the loop simply gives each lane
+more columns separated by <code class="language-plaintext highlighter-rouge">warpSize</code>.</p>
+
+<p>Notice that the code follows the same order as our worked example:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>compute one (local_max, local_denominator) pair per lane
+-&gt; reduce and broadcast row_max
+-&gt; correct every local_denominator
+-&gt; reduce and broadcast row_denominator
+-&gt; normalize the row
+</code></pre></div></div>
+
+<h2 id="main-takeaways">Main takeaways</h2>
+
+<p>Alright, that was a lot of work for an operation that fits in one line of
+mathematics. We started with the stable Softmax equation, wrote the most direct
+CUDA kernel, and then kept changing the algorithm until its execution matched
+the way a GPU wants to read memory and share work.</p>
+
+<p>If I had to compress the entire worklog into a few points, these would be the
+ones:</p>
+
+<ul>
+  <li>
+    <p><strong>Numerical stability comes first.</strong> Subtracting the row maximum keeps the
+largest exponential equal to 1 and prevents large inputs from overflowing.
+A fast Softmax that is numerically unstable is not useful.</p>
+  </li>
+  <li>
+    <p><strong>The obvious parallelization still left each row sequential.</strong> Giving one
+row to one thread parallelized the $M$ rows, but one thread still performed
+every operation within its row.</p>
+  </li>
+  <li>
+    <p><strong>Online Softmax trades a little arithmetic for one fewer memory pass.</strong> By
+correcting the running denominator whenever the maximum changes, we fused
+the maximum and denominator passes. Global-memory traffic fell from $16MN$
+bytes to $12MN$ bytes, even though we added some rescaling work.</p>
+  </li>
+  <li>
+    <p><strong>Coalescing is decided by a warp, not by one thread.</strong> With one thread per
+row, neighboring lanes accessed different rows. With one warp per row,
+neighboring lanes accessed neighboring columns.</p>
+  </li>
+  <li>
+    <p><strong>Splitting a row means no lane has the complete answer.</strong> Each lane produces
+a local maximum and a local denominator. Warp reductions turn those 32
+partial answers into one row-wide answer.</p>
+  </li>
+  <li>
+    <p><strong>Partial denominators must use the same maximum before we add them.</strong> The
+factor $e^{m_{\text{local}}-m_{\text{row}}}$ puts every local denominator on
+the same scale before the sum reduction.</p>
+  </li>
+  <li>
+    <p><strong>A little on-chip communication buys a lot of useful parallelism.</strong> A
+32-lane warp pays 12 communication steps per row. In return, 32 lanes work on
+that row together and its global-memory accesses become coalesced.</p>
+  </li>
+</ul>
+
+<p>And that is really the lesson here. We did not change the mathematical
+definition of Softmax. We changed the order in which its statistics are
+computed and which threads own the work. That was enough to remove a complete
+read of the input, recover efficient memory transactions, and expose
+parallelism inside every row.</p>
+
+    </d-article>
+
+    <d-appendix>
+      <d-footnote-list></d-footnote-list>
+      <d-citation-list></d-citation-list>
+      <div class="base-grid appendix-entry">
+  <h3 style="grid-column: 0;">Citation</h3>
+  <p class="author-footnote">For attribution in academic contexts, please cite this work as:</p>
+
+  <div class="author-footnote">
+  
+  <div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    Mishra, Anshuman. "How to make your models fast." Online, 2026.
+</code></pre></div></div>
+
+  </div>
+
+  <p class="author-footnote">or as a BibTeX entry:</p>
+
+  <div class="author-footnote">
+  
+  <div class="language-bibtex highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="nc">@book</span><span class="p">{</span><span class="nl">how-to-make-your-models-fast</span><span class="p">,</span>
+      <span class="na">title</span> <span class="p">=</span> <span class="s">{How to make your models fast}</span><span class="p">,</span>
+      <span class="na">author</span> <span class="p">=</span> <span class="s">{Mishra, Anshuman}</span><span class="p">,</span>
+      <span class="na">howpublished</span> <span class="p">=</span> <span class="s">{Online}</span><span class="p">,</span>
+      <span class="na">url</span> <span class="p">=</span> <span class="s">{https://athleticcoder21.github.io/inference-book/}</span><span class="p">,</span>
+      <span class="na">year</span> <span class="p">=</span> <span class="s">{2026}</span>
+    <span class="p">}</span>
+</code></pre></div></div>
+
+  </div>
+
+</div>
+
+    </d-appendix>
+
+    <d-bibliography src="/inference-book/assets/bibliography/"></d-bibliography>
+
+    
+    
+  </div>
+
+  <!-- Footer -->
+  
+  <footer class="sticky-bottom mt-5" role="contentinfo">
+    
+
+    <div class="container">
+      © Copyright 2026
+      
+      
+      . How to make your models fast by Anshuman Mishra.
+
+      
+      
+    </div>
+  </footer>
+
+
+
+  <!-- JavaScripts -->
+  <!-- jQuery -->
+<script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+
+<!-- Bootsrap & MDB scripts -->
+<script src="/inference-book/assets/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mdbootstrap@4.20.0/js/mdb.min.js" integrity="sha256-NdbiivsvWt7VYCt6hYNT3h/th9vSTL4EDWeGs5SN3DA=" crossorigin="anonymous"></script>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  <!-- Medium Zoom JS -->
+  <script defer src="https://cdn.jsdelivr.net/npm/medium-zoom@1.1.0/dist/medium-zoom.min.js" integrity="sha256-ZgMyDAIYDYGxbcpJcfUnYwNevG/xi9OHKaR/8GK+jWc=" crossorigin="anonymous"></script>
+  <script defer src="/inference-book/assets/js/zoom.js?85ddb88934d28b74e78031fd54cf8308"></script>
+
+
+
+
+
+
+<!-- Load Common JS -->
+<script src="/inference-book/assets/js/no_defer.js?2781658a0a2b13ed609542042a859126"></script>
+<script defer src="/inference-book/assets/js/common.js?e0514a05c5c95ac1a93a8dfd5249b92e"></script>
+<script defer src="/inference-book/assets/js/copy_code.js?12775fdf7f95e901d7119054556e495f" type="text/javascript"></script>
+
+<!-- Jupyter Open External Links New Tab -->
+<script defer src="/inference-book/assets/js/jupyter_new_tab.js?d9f17b6adc2311cbabd747f4538bb15f"></script>
+
+<!-- Tufte-style margin sidenotes for d-footnote -->
+<script defer src="/inference-book/assets/js/sidenotes.js?5488feda9017667a4b53f647c3851cee"></script>
+
+<!-- Removed Badges -->
+
+
+  <!-- MathJax -->
+  <script defer type="text/javascript" id="MathJax-script" src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js" integrity="sha256-MASABpB4tYktI2Oitl4t+78w/lyA+D7b/s9GEP0JOGI=" crossorigin="anonymous"></script>
+  <script src="/inference-book/assets/js/mathjax-setup.js?70d799092f862ad98c7876aa47712e20"></script>
+  <script defer src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6" crossorigin="anonymous"></script>
+  <!-- Removed Pseudocode -->
+
+
+
+
+
+
+
+
+
+  <!-- Scrolling Progress Bar -->
+  <script defer src="/inference-book/assets/js/progress-bar.js?2f30e0e6801ea8f5036fa66e1ab0a71a" type="text/javascript"></script>
+
+
+
+
+
+
+
+  <!-- Back to Top -->
+  <script src="/inference-book/assets/js/vanilla-back-to-top.min.js?f40d453793ff4f64e238e420181a1d17"></script>
+  <script>
+    addBackToTop();
+  </script>
+
+
+
+
+
+
+
+
+</body>
+</html>
