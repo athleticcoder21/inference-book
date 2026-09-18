@@ -1,12 +1,32 @@
 ---
+layout: distill
+permalink: /gemv/
 title: "GEMV"
-subtitle: "From a naïve CUDA kernel to coalesced memory access"
 description: "A worklog on optimizing matrix-vector multiplication in CUDA by reasoning about arithmetic intensity, memory transactions, and warp-level access patterns."
 date: 2026-09-10
-image: ../assets/gemv/image1-v2.png
+section_number: 1
+previous_section_url: ../index
+previous_section_name: "Part 0: Introduction"
+next_section_url: ../softmax
+next_section_name: "Softmax"
+authors:
+  - name: Anshuman Mishra
+    url: https://heyyanshuman.com
+    affiliations:
+      name: Independent researcher
+toc:
+  - name: Arithmetic intensity
+  - subsections:
+    - name: Memory Access
+    - name: Computation
+    - name: Algorithm
+    - name: Okay, but how bad is bad?
+    - name: What access pattern do we actually want?
+    - name: Turning that access pattern into code
+  - name: Main takeaways
 ---
 
-The code for this chapter lives in [`kernels/gemv/`](https://github.com/athleticcoder21/inference-book/tree/main/kernels/gemv).
+The code for this chapter lives in [`gemv/`](https://github.com/athleticcoder21/inference-book/tree/main/gemv).
 
 GEMV means GEneral Matrix Vector multiplication. Which is nothing but muliplication of a matrix with a Vector. 
 
@@ -16,7 +36,7 @@ Formally our goal is to compute:
 
 $$\mathbf{y}_{M \times 1} = \mathbf{A}_{M \times N} \cdot \mathbf{x}_{N \times 1}$$
 
-![](../assets/gemv/image1-v2.png){fig-alt="A hand-drawn GEMV overview showing an M by N matrix A multiplied by a length-N vector x to produce a length-M vector y."}
+{% include figure.liquid path="assets/gemv/image1-v2.png" class="img-fluid" alt="A matrix A multiplied by a vector x to produce a vector y." %}
 
 ## Arithmetic intensity
 
@@ -79,7 +99,7 @@ bandwidth $B_{\text{memory}}$ can sustain at most approximately
 $0.5B_{\text{memory}}$ FLOPs/s for GEMV, unless the matrix is already resident
 in a faster level of the memory hierarchy.
 
-::: {.callout-note title="Row-major indexing refresher"}
+<aside class="callout"><strong>Row-major indexing refresher</strong>
 
 Although we reason about $\mathbf{A}$ as a two-dimensional matrix, it occupies
 one linear region of memory. CUDA lays out the entries row by row, so an entry
@@ -105,9 +125,9 @@ $$
 A_{2,2} = A[10].
 $$
 
-![](../assets/gemv/naive_gemv_memory_layout_v2.svg){fig-alt="A three by four matrix is flattened into a single row of twelve memory locations. The highlighted element A[2,2] maps to offset 2 times 4 plus 2, which is linear index 10." width=100%}
+<img src="{{ '/assets/gemv/naive_gemv_memory_layout_v2.svg' | relative_url }}" alt="A three by four matrix flattened into linear row-major memory." />
 
-:::
+</aside>
 
 ### **Algorithm**
 
@@ -123,7 +143,7 @@ The $M$ dot products are independent, so we can assign row $i$ to one thread:
 that thread reads row $i$ of $\mathbf{A}$, multiplies its entries by
 $\mathbf{x}$, accumulates the products, and writes $y_i$.
 
-![](../assets/gemv/naive_gemv_execution.svg){fig-alt="Naive GEMV access pattern. Each thread traverses one contiguous row of flattened A, uses the shared vector x, and writes one element of y." width=100%}
+{% include figure.liquid path="assets/gemv/naive_gemv_execution.svg" class="img-fluid" alt="Naive GEMV with one independent dot product assigned to each thread." %}
 
 ```cpp
 __global__ void naive_gemv_kernel(
@@ -196,7 +216,7 @@ See the problem? These 32 neighboring threads are not reading 32 neighboring
 elements. Every pair of threads is separated by an entire row - exactly $N$
 floats in memory.
 
-![](../assets/gemv/naive_gemv_noncontiguous_access.svg){fig-alt="The first warp of the naive GEMV kernel accessing column zero. Threads zero, one, two, three, and thirty-one access A[0,0], A[1,0], A[2,0], A[3,0], and A[31,0]. In row-major linear memory these elements are at indices zero, N, two N, three N, and thirty-one N, showing a stride of N between neighboring threads." width=100%}
+{% include figure.liquid path="assets/gemv/naive_gemv_noncontiguous_access.svg" class="img-fluid" alt="A warp performing non-contiguous matrix loads in the naive GEMV kernel." %}
 
 For a typical case where $N=8192$, thread 0 reads `A[0]` while thread 1
 reads `A[8192]`. That is a gap of 8192 floats, or 32,768 bytes. Thread 2 is
@@ -321,7 +341,7 @@ $$
 We are performing the same FLOPs, but because of our choice of memory access now each useful matrix byte is costing
 us eight transferred bytes.
 
-::: {.callout-important title="What are we really optimizing?"}
+<aside class="callout callout-important"><strong>What are we really optimizing?</strong>
 
 Contiguous access does not magically increase GEMV's theoretical arithmetic
 intensity - it is still approximately $0.5$ FLOPs/byte. What it does is stop bad
@@ -329,7 +349,7 @@ memory transactions from reducing the *effective* arithmetic intensity even
 further. Coalescing gives us a chance to use the GPU's available memory
 bandwidth instead of throwing most of it away.
 
-:::
+</aside>
 
 That is now our target. GEMV will remain memory-bound, but if neighboring
 threads access neighboring elements, we can make those expensive memory
@@ -399,7 +419,7 @@ One thread jumps by 32 elements over time, but all 32 threads together access
 neighboring elements during every pass. This is the same subtle distinction we
 saw earlier, now working in our favour.
 
-![](../assets/gemv/coalesced_gemv_warp_access_v2.svg){fig-alt="A coalesced GEMV access pattern in which one warp owns one matrix row. On the first pass threads zero through thirty-one access adjacent columns zero through thirty-one. On the second pass the same threads access adjacent columns thirty-two through sixty-three. Each pass uses four contiguous 32-byte sectors, transferring 128 useful bytes in 128 bytes of memory traffic." width=100%}
+{% include figure.liquid path="assets/gemv/coalesced_gemv_warp_access_v2.svg" class="img-fluid" alt="A warp accessing adjacent values from one matrix row for coalesced GEMV loads." %}
 
 Under our 32-byte-sector model, 32 adjacent FP32 loads request 128 useful bytes
 and transfer 128 bytes:
@@ -534,7 +554,7 @@ void launch_kernel(
 }
 ```
 
-::: {.callout-note title="How does warpReduceSum work?"}
+<aside class="callout"><strong>How does warpReduceSum work?</strong>
 
 Recall that a lane is a thread's position inside its warp, numbered from 0 to 31. Since our block
 contains exactly one warp, thread 0 is lane 0, thread 1 is lane 1, and so on.
@@ -575,7 +595,7 @@ loads with contiguous ones. We traded a little communication inside the warp
 for dramatically better use of global-memory bandwidth—which is exactly the
 trade a memory-bound kernel wants us to make.
 
-:::
+</aside>
 
 ## Main takeaways
 

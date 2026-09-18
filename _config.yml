@@ -189,10 +189,6 @@ exclude:
   - LICENSE
   - README.md
   - scaling-book/
-  - chapters/
-  - styles/
-  - index.qmd
-  - _quarto.yml
 keep_files:
   - CNAME
   - .nojekyll

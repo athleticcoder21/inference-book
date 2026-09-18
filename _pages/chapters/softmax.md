@@ -1,10 +1,34 @@
 ---
+layout: distill
+permalink: /softmax/
 title: "Softmax"
-subtitle: "From a naive CUDA kernel to coalesced memory access"
 description: "A worklog on optimizing Softmax kernel in CUDA"
 date: 2026-09-11
-image: ../assets/softmax/softmax-header.png
-
+section_number: 2
+previous_section_url: ../gemv
+previous_section_name: "GEMV"
+next_section_url: ../layernorm
+next_section_name: "LayerNorm"
+authors:
+  - name: Anshuman Mishra
+    url: https://heyyanshuman.com
+    affiliations:
+      name: Independent researcher
+toc:
+  - name: One thread per row
+  - subsections:
+    - name: Walking over one row
+    - name: Cost of three passes
+  - name: Removing one pass over the row
+  - subsections:
+    - name: Updating statistics online
+    - name: Cost of two passes
+  - name: One warp per row
+  - subsections:
+    - name: Splitting a row across the warp
+    - name: Cost after coalescing
+    - name: Turning the complete algorithm into code
+  - name: Main takeaways
 ---
 
 The code for this chapter lives in [`kernels/softmax/`](https://github.com/athleticcoder21/inference-book/tree/main/kernels/softmax).
@@ -20,7 +44,7 @@ $$
   \qquad i \in \{0, \ldots, N-1\}.
 $$
 
-![](../assets/softmax/softmax-header.png){fig-alt="A hand-drawn row of four input scores passing through Softmax to become four nonnegative probabilities whose sum is one."}
+{% include figure.liquid path="assets/softmax/softmax-header.png" class="img-fluid" alt="A hand-drawn row of four input scores passing through Softmax to become four nonnegative probabilities whose sum is one." %}
 
 Here, $x_i$ is the $i$-th element of the input and the denominator is the sum of the exponentials of all elements in the vector.
 
@@ -146,8 +170,7 @@ floating-point operation for every 4 bytes transferred. The exponential
 evaluations certainly add computation, but they do not remove the three full
 reads of the input.
 
-::: {.callout-note title="Why are exponentials not included in the FLOP count?" collapse="true"}
-
+<aside class="callout"><strong>Why are exponentials not included in the FLOP count?</strong>
 FLOPs traditionally count basic floating-point operations such as addition,
 subtraction, multiplication, and division. Functions such as `exp` are
 implemented using multiple instructions or specialized hardware and can have
@@ -159,9 +182,7 @@ intensity approaching $0.375$ operations/byte. That number can be useful for a
 rough comparison between our own kernels, but it should not be confused with a
 hardware-independent FLOP count.
 
-:::
-
-
+</aside>
 There are two problems hiding inside this simple implementation:
 
 - **Unnecessary repeated iterations.** We iterate over the same row three
@@ -399,14 +420,13 @@ from doing fewer FLOPs, we actually do a little more. It came from eliminating
 one complete read of the input matrix.**
 
 
-::: {.callout-note}
+<aside class="callout"><strong>Why this helps</strong>
 
 Note that this bump did not come
 from doing fewer FLOPs, we actually do a little more. It came from eliminating
 one complete read of the input matrix.
 
-:::
-
+</aside>
 ## One warp per row
 
 ### Splitting a row across the warp
@@ -467,7 +487,7 @@ thread 2 -> x[6]
 thread 3 -> x[7]
 ```
 
-![](../assets/softmax/coalesced_row_access.svg){fig-alt="A four-thread teaching block reading an eight-element Softmax row. Threads zero through three first read adjacent columns zero through three, then advance by four to read adjacent columns four through seven." width=100%}
+{% include figure.liquid path="assets/softmax/coalesced_row_access.svg" class="img-fluid" alt="A four-thread teaching block reading an eight-element Softmax row. Threads zero through three first read adjacent columns zero through three, then advance by four to read adjacent columns four through seven." %}
 
 If you notice, one thread jumps by $T$ elements over time, but neighboring
 threads read neighboring elements at the same instant.
@@ -497,7 +517,7 @@ thread 3 -> [x3, x7] -> [0, 1]
 Each thread can run online Softmax on its two values. But it only produces a
 *local* maximum and a *local* denominator:
 
-![](../assets/softmax/local_online_statistics.svg){fig-alt="Four threads process different slices of one row and produce four local maxima and four local denominators." width=100%}
+{% include figure.liquid path="assets/softmax/local_online_statistics.svg" class="img-fluid" alt="Four threads process different slices of one row and produce four local maxima and four local denominators." %}
 
 So now we have
 
@@ -591,7 +611,7 @@ $$
 \end{aligned}
 $$
 
-![](../assets/softmax/max_and_sum_reductions.svg){fig-alt="Four local maxima are reduced to row maximum six. Each local denominator is then corrected so that all four use the same row maximum." width=100%}
+{% include figure.liquid path="assets/softmax/max_and_sum_reductions.svg" class="img-fluid" alt="Four local maxima are reduced to row maximum six. Each local denominator is then corrected so that all four use the same row maximum." %}
 
 After this correction, all four denominators are relative to the same maximum,
 so the next step is to add them.
@@ -618,7 +638,7 @@ Second round:
 thread 0 -> 1.4360 + 0.1513 = 1.5873
 ```
 
-![](../assets/softmax/sum_reduction_steps.svg){fig-alt="A four-lane sum reduction. Two pairs are added in the first round, and the remaining pair is added in the second round to produce 1.5873." width=100%}
+{% include figure.liquid path="assets/softmax/sum_reduction_steps.svg" class="img-fluid" alt="A four-lane sum reduction. Two pairs are added in the first round, and the remaining pair is added in the second round to produce 1.5873." %}
 
 So the denominator for the complete row is
 
@@ -658,7 +678,7 @@ __device__ __forceinline__ float warpReduceSum(float value) {
 }
 ```
 
-::: {.callout-note title="What does __forceinline__ mean?" collapse="true"}
+<aside class="callout" markdown="1"><strong>What does __forceinline__ mean?</strong>
 
 Normally, calling a function means jumping to that function and returning when
 it is done. When a function is **inlined**, the compiler instead places the
@@ -674,10 +694,9 @@ It only changes how the compiler places its instructions in the generated GPU
 code. The trade-off is that forcing a large function to be inlined can make the
 compiled code much bigger, so we mainly use it for small helpers like these.
 
-:::
+</aside>
 
-::: {.callout-note title="What does __shfl_down_sync actually do?" collapse="true"}
-
+<aside class="callout" markdown="1"><strong>What does __shfl_down_sync actually do?</strong>
 Let us unpack this line:
 
 ```cpp
@@ -732,8 +751,7 @@ result. In a real 32-lane warp, only the lower half contains useful combined
 results after each round, but all lanes named by the mask still execute the
 shuffle.
 
-:::
-
+</aside>
 For an offset of 16, lane 0 reads lane 16, lane 1 reads lane 17, and so on. The
 offset is then halved until lane 0 contains the final result. We do not need to
 move these values through global memory or even shared memory. They travel
@@ -767,12 +785,11 @@ warps for one row, a warp shuffle alone will not be enough because shuffles do
 not cross warp boundaries. We would then need one additional reduction through
 shared memory. Let us not add that machinery until we actually need it.
 
-
 ### Cost after coalescing
 
 #### Memory access
 
-Let us see the cost of this optimization, starting with memory. The online algorithm still reads every input twice
+Let us start with memory. The online algorithm still reads every input twice
 and writes every output once:
 
 | Operation | Elements transferred | Bytes transferred |
@@ -817,13 +834,11 @@ $$
 \frac{12MN}{1}=12MN \quad \text{bytes}.
 $$
 
-That is up to an **8x improvement in memory-transaction efficiency**. Hold your horses though, because it
-does not mean that the kernel must become exactly 8x faster. Cache hits,
+That is up to an $8\times$ improvement in memory-transaction efficiency. It
+does not mean that the kernel must become exactly $8\times$ faster. Cache hits,
 alignment, row size, exponentials, and the reduction work all affect the final
-runtime. 
-
-*Bottomline is that we have stopped throwing away seven out of every eight bytes moved
-by our simplified model.*
+runtime. But we have stopped throwing away seven out of every eight bytes moved
+by our simplified model.
 
 Ignoring the small reduction overhead for a moment, the effective arithmetic
 intensity moves from
@@ -878,7 +893,7 @@ plus $MW$ additional exponential evaluations. For rows containing hundreds or
 thousands of elements, this fixed amount of work is small compared with the
 work across all $MN$ elements.
 
-::: {.callout-note title="Communication cost of the warp algorithm"}
+<aside class="callout" markdown="1"><strong>Communication cost of the warp algorithm</strong>
 
 Let us first count the communication in our four-thread example.
 
@@ -942,7 +957,7 @@ T_{\text{comm,row}}
 \left(2\left\lceil\log_2 W\right\rceil+2\right)t_{\text{shuffle}}.
 $$
 
-:::
+</aside>
 
 Previously, one thread handled all $N$ elements in each pass. Now each lane
 handles only about $\lceil N/W\rceil$ elements per pass, followed by the fixed
@@ -1091,7 +1106,7 @@ ones:
   row to one thread parallelized the $M$ rows, but one thread still performed
   every operation within its row.
 
-- **Online Softmax trades FLOPs for one fewer memory pass.** By
+- **Online Softmax trades a little arithmetic for one fewer memory pass.** By
   correcting the running denominator whenever the maximum changes, we fused
   the maximum and denominator passes. Global-memory traffic fell from $16MN$
   bytes to $12MN$ bytes, even though we added some rescaling work.
@@ -1100,7 +1115,7 @@ ones:
   row, neighboring lanes accessed different rows. With one warp per row,
   neighboring lanes accessed neighboring columns.
 
-- **Moving to warp pattern means no thread has the complete answer.** Each thread produces
+- **Splitting a row means no lane has the complete answer.** Each lane produces
   a local maximum and a local denominator. Warp reductions turn those 32
   partial answers into one row-wide answer.
 
@@ -1108,12 +1123,12 @@ ones:
   factor $e^{m_{\text{local}}-m_{\text{row}}}$ puts every local denominator on
   the same scale before the sum reduction.
 
-- **A little on-chip communication gave us a lot of useful parallelism.** A
-  32-thread warp pays 12 communication steps per row. In return, 32 thread work on
+- **A little on-chip communication buys a lot of useful parallelism.** A
+  32-lane warp pays 12 communication steps per row. In return, 32 lanes work on
   that row together and its global-memory accesses become coalesced.
 
-
-We did not change the mathematical definition of Softmax. 
-We changed the order in which its statistics are computed and which threads own the work. 
-That was enough to remove a complete read of the input, recover efficient memory transactions,
-and expose parallelism inside every row.
+And that is really the lesson here. We did not change the mathematical
+definition of Softmax. We changed the order in which its statistics are
+computed and which threads own the work. That was enough to remove a complete
+read of the input, recover efficient memory transactions, and expose
+parallelism inside every row.

@@ -5,7 +5,7 @@ nav: true
 nav_order: 8
 dropdown: true
 children:
-  - title: Part 0. Introduction
+  - title: Introduction
     permalink: /index
   - title: GEMV
     permalink: /gemv
@@ -13,4 +13,6 @@ children:
     permalink: /softmax
   - title: LayerNorm
     permalink: /layernorm
+  - title: GEMM
+    permalink: /gemm
 ---

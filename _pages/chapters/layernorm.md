@@ -1,13 +1,14 @@
 ---
 layout: distill
+permalink: /layernorm/
 title: "LayerNorm"
 description: "A worklog on optimizing LayerNorm in CUDA by counting memory traffic, coalescing row access, combining statistics with Welford's algorithm, and reusing data from shared memory."
 date: 2026-09-17
 section_number: 3
 previous_section_url: ../softmax
 previous_section_name: "Softmax"
-next_section_url: ../layernorm
-next_section_name: "More chapters soon"
+next_section_url: ../gemm
+next_section_name: "GEMM"
 authors:
   - name: Anshuman Mishra
     url: https://heyyanshuman.com

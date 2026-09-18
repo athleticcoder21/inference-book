@@ -1,20 +1,27 @@
-<a class="chapter-card" href="chapters/making-gemv-fast.html">
+<a class="chapter-card" href="{{ '/gemv/' | relative_url }}">
   <span class="chapter-card__eyebrow">Chapter 1 · Kernels</span>
   <strong>GEMV</strong>
   <span>One matrix, one vector, and an access pattern that quietly wastes most of the GPU's memory bandwidth.</span>
   <span class="chapter-card__link">Read the chapter →</span>
 </a>
 
-<a class="chapter-card" href="chapters/optimizing-softmax.html">
+<a class="chapter-card" href="{{ '/softmax/' | relative_url }}">
   <span class="chapter-card__eyebrow">Chapter 2 · Kernels</span>
   <strong>Softmax</strong>
   <span>From a direct row-wise implementation to online statistics, coalesced reads, and warp reductions.</span>
   <span class="chapter-card__link">Read the chapter →</span>
 </a>
 
-<a class="chapter-card" href="chapters/optimizing-layernorm.html">
+<a class="chapter-card" href="{{ '/layernorm/' | relative_url }}">
   <span class="chapter-card__eyebrow">Chapter 3 · Kernels</span>
   <strong>LayerNorm</strong>
   <span>From three global-memory reads to coalesced Welford statistics and a shared-memory row cache.</span>
+  <span class="chapter-card__link">Read the chapter →</span>
+</a>
+
+<a class="chapter-card" href="{{ '/gemm/' | relative_url }}">
+  <span class="chapter-card__eyebrow">Chapter 4 · Kernels</span>
+  <strong>GEMM</strong>
+  <span>From one output per thread to shared-memory tiles, register micro-tiles, and vectorized loads.</span>
   <span class="chapter-card__link">Read the chapter →</span>
 </a>

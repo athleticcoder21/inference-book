@@ -15,11 +15,16 @@ Jekyll renders the complete book into `_site/` using the Distill book theme.
 
 ## Current chapters
 
-- [GEMV](chapters/making-gemv-fast.qmd)
-- [Softmax](chapters/optimizing-softmax.qmd)
-- [LayerNorm](chapters/optimizing-layernorm.qmd)
+- [GEMV](_pages/chapters/gemv.md)
+- [Softmax](_pages/chapters/softmax.md)
+- [LayerNorm](_pages/chapters/layernorm.md)
+- [GEMM](_pages/chapters/gemm.md)
+
+Jekyll builds these Distill pages into `_site/`.
 
 ## CUDA implementations
 
 - [GEMV kernels](kernels/gemv/)
 - [Softmax kernels](kernels/softmax/)
+- [LayerNorm kernels](kernels/layernorm/)
+- [GEMM kernels](kernels/gemm/)
