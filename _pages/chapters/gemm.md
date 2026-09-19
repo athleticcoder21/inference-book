@@ -2,7 +2,7 @@
 layout: distill
 permalink: /gemm/
 title: "GEMM"
-description: "A worklog on optimizing matrix multiplication in CUDA by fixing thread ownership, reusing global-memory tiles in shared memory, and accumulating register micro-tiles."
+description: "A worklog on making matrix multiplication fast in CUDA by fixing memory access, reusing tiles from shared memory, and computing multiple outputs per thread."
 date: 2026-09-18
 section_number: 4
 previous_section_url: ../layernorm
@@ -15,33 +15,38 @@ authors:
     affiliations:
       name: Independent researcher
 toc:
-  - name: How much work does GEMM perform?
+  - name: The naive kernel
     subsections:
-      - name: The best-case traffic
-  - name: One thread per output
+      - name: The algorithm
+      - name: Cost of the naive kernel
+      - name: Okay, but what is the warp reading?
+  - name: Fixing the thread mapping
     subsections:
-      - name: A bad ownership choice
-      - name: Let x mean column
-      - name: Cost of the direct kernel
-  - name: One block per output tile
+      - name: Cost after coalescing
+  - name: Shared memory tiling
     subsections:
-      - name: A four-by-four example
-      - name: Where the reuse comes from
-      - name: Turning tiling into code
-  - name: More than one output per thread
+      - name: A small example
+      - name: Turning the idea into code
+      - name: Cost after tiling
+  - name: One output per thread is not enough
+  - name: 1D block tiling
     subsections:
-      - name: One-dimensional register tiling
-      - name: Two-dimensional register tiling
-      - name: The complete 2D register-tiled schedule
-  - name: Vectorizing the tile loads
-  - name: What each optimization changed
-  - name: What we should benchmark
+      - name: Cost of 1D block tiling
+  - name: 2D block tiling
+    subsections:
+      - name: Cost of 2D block tiling
+      - name: Choosing the tile sizes
+  - name: Final kernel
+  - name: Comparing the kernels
   - name: Main takeaways
 ---
 
 The code for this chapter lives in [`kernels/gemm/`](https://github.com/athleticcoder21/inference-book/tree/main/kernels/gemm).
 
-GEMM means **GEneral Matrix-Matrix multiplication**. Given
+We have already done GEMV, which was a matrix multiplied with a vector. GEMM
+is the same idea, except now we are multiplying a matrix with another matrix.
+
+GEMM means GEneral Matrix-Matrix multiplication. Formally, we have
 
 $$
 \mathbf{A}\in\mathbb{R}^{M\times K},
@@ -49,15 +54,15 @@ $$
 \mathbf{B}\in\mathbb{R}^{K\times N},
 $$
 
-we want to calculate
+and our goal is to calculate
 
 $$
 \mathbf{C}_{M\times N}
   =\mathbf{A}_{M\times K}\mathbf{B}_{K\times N}.
 $$
 
-Every output element is the dot product of one row of $\mathbf{A}$ and one
-column of $\mathbf{B}$:
+Every element of $\mathbf{C}$ is a dot product between one row of
+$\mathbf{A}$ and one column of $\mathbf{B}$:
 
 $$
 C_{i,j}=\sum_{k=0}^{K-1}A_{i,k}B_{k,j}.
@@ -65,251 +70,41 @@ $$
 
 {% include figure.liquid path="assets/gemm/gemm-overview.svg" class="img-fluid" alt="An M by K matrix A multiplied by a K by N matrix B to produce an M by N matrix C. One row of A and one column of B are highlighted because their dot product produces one highlighted output element." %}
 
-This equation looks like GEMV repeated for every column of $\mathbf{B}$, but
-that extra matrix changes the optimization problem. In GEMV, an element of the
-matrix is useful for one output dot product. In GEMM, one value from
-$\mathbf{A}$ can contribute to many columns of $\mathbf{C}$, while one value
-from $\mathbf{B}$ can contribute to many rows. If we keep those values close to
-the processors, the same load can feed many multiply-adds.
-
-That reuse is why GEMM powers the large linear layers used during prompt
-processing and training. It is also why this chapter will feel different from
-GEMV, Softmax, and LayerNorm. Those kernels made progress mainly by moving
-fewer bytes. GEMM must also arrange enough independent arithmetic to keep the
-floating-point pipelines busy.
-
-<aside class="callout"><strong>Why this chapter uses FP32</strong>
-
-The kernels below use FP32 so that the change from one version to the next is
-about work ownership and data movement, not a simultaneous change of datatype
-or execution unit. FP16 and BF16 reduce operand traffic, and tensor cores
-change how the multiply-accumulate itself is issued. They build on the same
-tiling hierarchy, but deserve a separate treatment.
-
-</aside>
-
-Before touching CUDA, let us write the complete calculation:
+Alright, so let's get started. We can assign one thread to every element of $\mathbf{C}$, which will compute everything parallely.
+This essentially means that every thread walks over the $K$ dimension, calculates one dot product, and
+writes one value to $\mathbf{C}$.
 
 ```text
-for row = 0 to M - 1:
-    for column = 0 to N - 1:
-        sum = 0
+row    <- block_y * block_width  + thread_x
+column <- block_x * block_height + thread_y
 
-        for inner = 0 to K - 1:
-            sum += A[row, inner] * B[inner, column]
+if row or column is outside C:
+    stop
 
-        C[row, column] = sum
+sum <- 0
+
+for inner from 0 to K - 1:
+    sum <- sum + A[row, inner] * B[inner, column]
+
+C[row, column] <- sum
 ```
 
-There are $MN$ independent output elements. The first kernel will expose all
-of that parallelism by assigning one output element to one thread.
-
-## How much work does GEMM perform?
-
-Each output dot product contains $K$ multiplications and $K-1$ additions.
-Across all $MN$ outputs, the exact ordinary floating-point work is
+Let's see how efficient this kernel, we just designed is. One thread calculates a dot product of length $K$. That is $K$
+multiplications and $K-1$ additions:
 
 $$
-MN\left(K+(K-1)\right)
-  =2MNK-MN \quad \text{FLOPs}.
+2K-1 \quad \text{FLOPs}.
 $$
 
-On a GPU, the multiply and addition are normally emitted as a fused
-multiply-add. One FMA is one instruction, but it still represents two
-floating-point operations. For large $K$, we therefore use the familiar
-approximation
+Across all $MN$ threads, the computation is
 
 $$
-\text{work}\approx2MNK \quad \text{FLOPs}.
+MN(2K-1)=2MNK-MN \quad \text{FLOPs}.
 $$
 
-### The best-case traffic
-
-Assume FP32, so every element occupies 4 bytes. If each input matrix could be
-read exactly once and the result written exactly once, the traffic would be
-
-| Operation | Elements transferred | Bytes transferred |
-|---|---:|---:|
-| Read $\mathbf{A}$ | $MK$ | $4MK$ |
-| Read $\mathbf{B}$ | $KN$ | $4KN$ |
-| Write $\mathbf{C}$ | $MN$ | $4MN$ |
-| **Total** | **$MK+KN+MN$** | **$4(MK+KN+MN)$** |
-
-The corresponding arithmetic intensity is
-
-$$
-AI_{\text{ideal}}(M,N,K)
-  =\frac{2MNK-MN}{4(MK+KN+MN)}
-  \quad \text{FLOPs/byte}.
-$$
-
-For a square multiplication with $M=N=K=L$,
-
-$$
-AI_{\text{ideal}}(L)
-  =\frac{2L^3-L^2}{12L^2}
-  =\frac{2L-1}{12}
-  \approx\frac{L}{6}
-  \quad \text{FLOPs/byte}.
-$$
-
-Unlike GEMV's intensity of roughly $0.5$ FLOPs/byte, this value grows with the
-matrix size. A $4096\times4096$ square GEMM has an ideal FP32 intensity of
-roughly $683$ FLOPs/byte.
-
-There is one important word in that calculation: **ideal**. The equation only
-counts each matrix element once. A direct kernel asks for the same values many
-times. Caches may satisfy some of those requests, but the kernel itself has not
-created a place where a block of threads can deliberately reuse the data.
-
-We will keep two traffic models separate throughout this chapter:
-
-- **Algorithmic traffic** counts the minimum useful data: one read of each
-  input and one write of the output.
-
-- **Kernel-issued traffic** counts the loads and stores requested by a
-  particular implementation before making assumptions about cache hits.
-
-The first number explains GEMM's potential. The second explains why a naive
-kernel can be slow despite that potential.
-
-## One thread per output
-
-The simplest parallel mapping gives one element of $\mathbf{C}$ to one CUDA
-thread. That thread walks across one row of $\mathbf{A}$ and down one column of
-$\mathbf{B}$.
-
-The two output coordinates are independent, so a 2D thread block feels
-natural. But there is a trap: CUDA forms warps by linearizing the block with
-`threadIdx.x` changing fastest. The meaning we attach to the x-coordinate
-therefore changes which output elements neighboring lanes own.
-
-### A bad ownership choice
-
-Suppose `threadIdx.x` selects the output row and `threadIdx.y` selects the
-output column:
-
-```cpp
-int row = blockIdx.y * blockDim.x + threadIdx.x;
-int column = blockIdx.x * blockDim.y + threadIdx.y;
-```
-
-For a block whose x-dimension is 32, the first warp has a fixed
-`threadIdx.y = 0` and `threadIdx.x = 0,1,...,31`. At one inner-loop iteration,
-its addresses are
-
-```text
-lane 0  -> A[(row + 0)  * K + inner]   B[inner * N + column]
-lane 1  -> A[(row + 1)  * K + inner]   B[inner * N + column]
-lane 2  -> A[(row + 2)  * K + inner]   B[inner * N + column]
-...
-lane 31 -> A[(row + 31) * K + inner]   B[inner * N + column]
-```
-
-All lanes request the same value from $\mathbf{B}$, which can be broadcast.
-But their $\mathbf{A}$ values are $K$ floats apart, and their final
-$\mathbf{C}$ stores are $N$ floats apart. For large matrices, one warp scatters
-both its matrix loads and its output stores across memory.
-
-```cpp
-__global__ void row_first_gemm_kernel(
-    const float* __restrict__ A,
-    const float* __restrict__ B,
-    float* __restrict__ C,
-    int M,
-    int N,
-    int K
-) {
-    int row = blockIdx.y * blockDim.x + threadIdx.x;
-    int column = blockIdx.x * blockDim.y + threadIdx.y;
-
-    if (row >= M || column >= N) {
-        return;
-    }
-
-    float sum = 0.0f;
-    for (int inner = 0; inner < K; ++inner) {
-        sum += A[row * K + inner] * B[inner * N + column];
-    }
-
-    C[row * N + column] = sum;
-}
-```
-
-The arithmetic is correct. The ownership is not friendly to the way a warp
-moves data.
-
-### Let x mean column
-
-Now swap the meaning of the thread coordinates:
-
-```cpp
-int column = blockIdx.x * blockDim.x + threadIdx.x;
-int row = blockIdx.y * blockDim.y + threadIdx.y;
-```
-
-With `blockDim.x = 32`, one warp owns 32 consecutive columns from the same
-output row. At inner-loop position $k$, lane $l$ reads
-
-$$
-A_{i,k}
-\qquad\text{and}\qquad
-B_{k,j+l}.
-$$
-
-The $\mathbf{A}$ address is identical across the warp, while the
-$\mathbf{B}$ addresses are consecutive. The output stores are consecutive as
-well:
-
-```text
-lane 0  -> A[row, inner]  B[inner, column + 0]  C[row, column + 0]
-lane 1  -> A[row, inner]  B[inner, column + 1]  C[row, column + 1]
-lane 2  -> A[row, inner]  B[inner, column + 2]  C[row, column + 2]
-...
-lane 31 -> A[row, inner]  B[inner, column + 31] C[row, column + 31]
-```
-
-One change in ownership turns the $\mathbf{B}$ loads and $\mathbf{C}$ stores
-into coalesced accesses.
-
-```cpp
-__global__ void coalesced_gemm_kernel(
-    const float* __restrict__ A,
-    const float* __restrict__ B,
-    float* __restrict__ C,
-    int M,
-    int N,
-    int K
-) {
-    int column = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (row >= M || column >= N) {
-        return;
-    }
-
-    float sum = 0.0f;
-    for (int inner = 0; inner < K; ++inner) {
-        sum += A[row * K + inner] * B[inner * N + column];
-    }
-
-    C[row * N + column] = sum;
-}
-```
-
-<aside class="callout"><strong>Coalesced does not mean reused</strong>
-
-The remapped kernel makes each warp's requests efficient, but every output
-thread still issues $K$ loads from $\mathbf{A}$ and $K$ loads from
-$\mathbf{B}$. Coalescing changes how those requests are served. It does not
-remove the repeated requests.
-
-</aside>
-
-### Cost of the direct kernel
-
-There are $MN$ output threads. Each one requests $K$ values from
-$\mathbf{A}$, $K$ values from $\mathbf{B}$, and writes one result:
+Now count the memory requests. Every thread reads $K$ values from
+$\mathbf{A}$, reads $K$ values from $\mathbf{B}$, and writes one result to
+$\mathbf{C}$.
 
 | Operation | Elements requested | Bytes requested |
 |---|---:|---:|
@@ -318,79 +113,260 @@ $\mathbf{A}$, $K$ values from $\mathbf{B}$, and writes one result:
 | Write $\mathbf{C}$ | $MN$ | $4MN$ |
 | **Total** | **$2MNK+MN$** | **$4(2MNK+MN)$** |
 
-Ignoring cache reuse, its arithmetic intensity is
+Ignoring the cache for a moment, its arithmetic intensity is
 
 $$
 \begin{aligned}
-AI_{\text{direct}}
+AI_{\text{naive}}
   &=\frac{2MNK-MN}{4(2MNK+MN)}\\
-  &=\frac{2K-1}{4(2K+1)}
-  \approx\frac{1}{4}
-  \quad \text{FLOPs/byte}.
+  &=\frac{2K-1}{4(2K+1)}\\
+  &\approx0.25 \quad \text{FLOPs/byte}.
 \end{aligned}
 $$
 
-So the same mathematical GEMM that had an ideal intensity growing with matrix
-size now looks like a low-intensity kernel. The difference is reuse. The
-algorithm says that $A_{i,k}$ is useful for every output column, but the kernel
-asks for it again from every output thread.
+This means that our implementation is memory bound. But just like GEMV, this
+number assumes that when a thread asks for one 4-byte float, only those 4 bytes
+travel through memory. Global-memory transactions do not work like that. The
+GPU fetches aligned chunks, and any unused bytes in those chunks are wasted.
 
-The cache can rescue nearby threads that request the same line. We should be
-glad when it does. We should not make the whole kernel depend on that rescue.
-
-## One block per output tile
-
-The direct kernel finishes one output at a time. A tiled kernel changes the
-unit of ownership: one thread block owns a rectangular tile of
-$\mathbf{C}$.
-
-Assume for now that the output tile is $T\times T$. The block cannot calculate
-that tile in one step because each dot product has length $K$. It therefore
-walks across the inner dimension in chunks of width $T$:
+So before optimizing anything, let us calculate how efficiently our warp uses
+those transactions. Go back to the first two lines of the pseudocode:
 
 ```text
-for each T-wide slice along K:
-    load one T x T tile from A into shared memory
-    load one T x T tile from B into shared memory
-    synchronize
+row    <- block_y * block_width  + thread_x
+column <- block_x * block_height + thread_y
+```
 
-    multiply the two shared-memory tiles
-    add the partial result to the accumulator
-    synchronize
+We made `thread_x` choose the row and `thread_y` choose the column.
 
-write the finished C tile
+CUDA places threads into a warp by changing `thread_x` first. So while
+`thread_y` stays fixed, the neighboring threads keep the same column and move
+across different rows:
+
+```text
+thread 0 owns C[row + 0, column]
+thread 1 owns C[row + 1, column]
+thread 2 owns C[row + 2, column]
+...
+```
+
+At one value of `inner`, those threads read
+
+```text
+thread 0 -> A[row + 0, inner]  B[inner, column]
+thread 1 -> A[row + 1, inner]  B[inner, column]
+thread 2 -> A[row + 2, inner]  B[inner, column]
+...
+```
+
+The $\mathbf{B}$ access is fine because every thread asks for the same value.
+But neighboring threads read $\mathbf{A}$ values that are $K$ elements apart,
+and later write $\mathbf{C}$ values that are $N$ elements apart.
+
+Using the same simplified 32-byte-sector model as the GEMV chapter, the warp
+asks for 32 useful FP32 values from $\mathbf{A}$:
+
+$$
+32\times4=128 \quad \text{useful bytes}.
+$$
+
+But because those values are far apart, each thread can require a separate
+32-byte sector. The warp may therefore transfer
+
+$$
+32\times32=1024 \quad \text{bytes}.
+$$
+
+The transaction efficiency of the $\mathbf{A}$ read is only
+
+$$
+\eta_A
+  =\frac{128}{1024}
+  =\frac{1}{8}
+  =12.5\%.
+$$
+
+The final $\mathbf{C}$ write has the same efficiency because those 32 output
+values are also separated by a complete row. The $\mathbf{B}$ read is the one
+part that behaves well: every thread requests the same value, so one memory
+transaction can be broadcast across the warp.
+
+So $0.25$ FLOPs/byte was already low, and the strided $\mathbf{A}$ reads and
+$\mathbf{C}$ writes make the effective traffic even worse. That is now our
+first target. We will keep one output element per thread, but arrange those
+elements so neighboring threads work on neighboring columns of the same row.
+
+Let us make `threadIdx.x` choose the column coordinate instead. Each thread
+still calculates one output element, but the elements assigned to one warp now
+lie next to each other in row $r$:
+
+```text
+thread 0 -> C[r, column + 0]
+thread 1 -> C[r, column + 1]
+thread 2 -> C[r, column + 2]
+...
+thread 31 -> C[r, column + 31]
+```
+
+Let's use four threads before jumping into the complete warp. During the first
+loop iteration, the threads read
+
+```text
+thread 0 -> A[r, 0]  B[0, column + 0]
+thread 1 -> A[r, 0]  B[0, column + 1]
+thread 2 -> A[r, 0]  B[0, column + 2]
+thread 3 -> A[r, 0]  B[0, column + 3]
+```
+
+During the next iteration, every thread moves to the next row of
+$\mathbf{B}$:
+
+```text
+thread 0 -> A[r, 1]  B[1, column + 0]
+thread 1 -> A[r, 1]  B[1, column + 1]
+thread 2 -> A[r, 1]  B[1, column + 2]
+thread 3 -> A[r, 1]  B[1, column + 3]
+```
+
+If you notice, one thread jumps by $N$ elements through $\mathbf{B}$ over
+time, but neighboring threads read neighboring values at the same instant.
+The value from $\mathbf{A}$ is common to all of them, so it can be broadcast
+across the warp. The final writes to $\mathbf{C}$ are neighboring values too.
+
+For a real warp, the first iteration reads 32 consecutive values from one row
+of $\mathbf{B}$, the second iteration reads 32 consecutive values from the
+next row, and so on. Every iteration therefore produces one coalesced chunk.
+
+Great, this is the access pattern we were looking for. The pseudocode now
+becomes:
+
+```text
+column <- block_x * block_width  + thread_x
+row    <- block_y * block_height + thread_y
+
+if row or column is outside C:
+    stop
+
+sum <- 0
+
+for inner from 0 to K - 1:
+    sum <- sum + A[row, inner] * B[inner, column]
+
+C[row, column] <- sum
+```
+
+All we did was change the thread mapping. The math is identical, but the
+memory access is much better.
+
+### Cost after coalescing
+
+The logical work did not change. Every thread still reads $K$ values from
+$\mathbf{A}$, reads $K$ values from $\mathbf{B}$, and writes one result. So
+the requested traffic is still $4(2MNK+MN)$ bytes and the arithmetic intensity
+is still
+
+$$
+AI_{\text{coalesced}}
+  =AI_{\text{naive}}
+  \approx0.25 \quad \text{FLOPs/byte}.
+$$
+
+But now we can compare the actual transactions. Under our simplified
+32-byte-sector model, one warp behaves like this:
+
+| Warp operation | Before remapping | After remapping |
+|---|---:|---:|
+| Read $\mathbf{A}$ at one `inner` | 32 separated sectors = 1024 bytes | 1 broadcast sector = 32 bytes |
+| Read $\mathbf{B}$ at one `inner` | 1 broadcast sector = 32 bytes | 4 consecutive sectors = 128 bytes |
+| Write 32 values to $\mathbf{C}$ | 32 separated sectors = 1024 bytes | 4 consecutive sectors = 128 bytes |
+
+For one step of the dot product, the input traffic falls from
+
+$$
+1024+32=1056 \quad \text{bytes}
+$$
+
+to
+
+$$
+32+128=160 \quad \text{bytes}.
+$$
+
+The output transaction is eight times smaller too. This does not mean that the
+kernel must become exactly that much faster. The requested-byte arithmetic
+intensity did not change. What changed is that the same requests are now served
+with much cleaner transactions.
+
+But there is still a deeper problem hiding inside the requested traffic itself.
+Take $\mathbf{A}$ first. The matrix contains only $MK$ values, but our kernel
+requests $MNK$ values from it. Why? Because every output column repeats the
+same row of $\mathbf{A}$.
+
+The same thing happens to $\mathbf{B}$. It contains only $KN$ values, but our
+kernel requests $MNK$ values from it because every output row repeats the same
+column of $\mathbf{B}$.
+
+So coalescing fixed how the requests reach memory. It did not fix how many
+times we make those requests.
+
+Now the next question is much more specific: instead of letting each thread ask
+for its own copy, can a block load a small group of $\mathbf{A}$ and
+$\mathbf{B}$ values once, put them somewhere nearby, and reuse them for several
+outputs?
+
+That nearby place is shared memory.
+
+## Shared memory tiling
+
+Until now, every thread has behaved like it is alone. It loads the values it
+needs, computes one output, and writes the answer.
+
+Shared memory changes the unit of cooperation. A block of threads now works on
+one small tile of $\mathbf{C}$ together.
+
+Inside that block, each thread can still own one output element. The difference
+is that the inputs are no longer loaded separately by every thread. The block
+loads a small piece of $\mathbf{A}$ and a small piece of $\mathbf{B}$ once, puts
+them in shared memory, and then all threads reuse those values.
+
+Suppose the block owns a $T\times T$ tile of $\mathbf{C}$. Those $T^2$ outputs
+use the same $T$ rows of $\mathbf{A}$ and the same $T$ columns of
+$\mathbf{B}$. But each dot product still runs across the full $K$ dimension.
+So we do not try to load the full rows and columns at once. We walk across
+$K$ in chunks:
+
+```text
+load the next T columns from the needed rows of A
+load the next T rows from the needed columns of B
+synchronize
+use those two tiles to add a partial result to C
+synchronize
+move to the next K tile
 ```
 
 {% include figure.liquid path="assets/gemm/gemm-tiling.svg" class="img-fluid" alt="A block computes one tile of C by repeatedly loading a horizontal tile from A and a vertical tile from B along the K dimension. Each pair of input tiles contributes a partial product to the same output tile." %}
 
-The first barrier ensures that the complete input tiles are available before
-any thread reads them. The second ensures that every thread has finished using
-the current tiles before the block overwrites shared memory with the next
-pair.
+The output tile does not move. The $\mathbf{A}$ and $\mathbf{B}$ tiles move
+along $K$, and every pair contributes one more piece to the same output
+accumulators.
 
-### A four-by-four example
+### A small example
 
-Use $T=2$ for a small matrix:
+Let's use a $4\times4$ multiplication and a tile size of 2. We want the
+top-left $2\times2$ tile of $\mathbf{C}$:
 
 $$
-\mathbf{A}=
 \begin{bmatrix}
-a_{00}&a_{01}&a_{02}&a_{03}\\
-a_{10}&a_{11}&a_{12}&a_{13}\\
-a_{20}&a_{21}&a_{22}&a_{23}\\
-a_{30}&a_{31}&a_{32}&a_{33}
-\end{bmatrix},
-\qquad
-\mathbf{B}=
-\begin{bmatrix}
-b_{00}&b_{01}&b_{02}&b_{03}\\
-b_{10}&b_{11}&b_{12}&b_{13}\\
-b_{20}&b_{21}&b_{22}&b_{23}\\
-b_{30}&b_{31}&b_{32}&b_{33}
+C_{00}&C_{01}\\
+C_{10}&C_{11}
 \end{bmatrix}.
 $$
 
-To produce the top-left $2\times2$ tile of $\mathbf{C}$, the block first loads
+Every one of these four outputs is a dot product of length 4. With a tile size
+of 2, we do not compute the full dot product in one shot. We compute two terms,
+then the next two terms.
+
+First, take the $k=0,1$ part:
 
 $$
 \mathbf{A}^{(0)}=
@@ -406,14 +382,22 @@ b_{10}&b_{11}
 \end{bmatrix}.
 $$
 
-Their product is only the first contribution:
+Multiplying these two small tiles gives only the first half of each dot
+product:
 
 $$
 \mathbf{C}_{0:2,0:2}
   \mathrel{+}=\mathbf{A}^{(0)}\mathbf{B}^{(0)}.
 $$
 
-The block then advances two positions along $K$ and loads
+For example, the partial value of $C_{00}$ now contains
+
+$$
+a_{00}b_{00}+a_{01}b_{10}.
+$$
+
+That is not enough. The full dot product also needs the $k=2,3$ terms. So the
+block moves forward along $K$ and loads
 
 $$
 \mathbf{A}^{(1)}=
@@ -429,33 +413,187 @@ b_{30}&b_{31}
 \end{bmatrix}.
 $$
 
-After
+These are multiplied and added to the same output tile:
 
 $$
 \mathbf{C}_{0:2,0:2}
-  \mathrel{+}=\mathbf{A}^{(1)}\mathbf{B}^{(1)},
+  \mathrel{+}=\mathbf{A}^{(1)}\mathbf{B}^{(1)}.
 $$
 
-the four accumulators contain the finished output tile. Nothing is written to
-global memory until all $K/T$ partial products have been accumulated.
+Now $C_{00}$ contains
 
-### Where the reuse comes from
+$$
+a_{00}b_{00}
++a_{01}b_{10}
++a_{02}b_{20}
++a_{03}b_{30},
+$$
 
-During one tile iteration, the block loads
+which is the complete dot product. The other three outputs in the tile are
+completed in the same way.
+
+So we are not multiplying random small matrices and somehow joining them later.
+Each block owns one fixed tile of $\mathbf{C}$, and the tiles from
+$\mathbf{A}$ and $\mathbf{B}$ are just the next pieces of the dot products for
+that same output tile.
+
+### Turning the idea into code
+
+We said that one block owns a $T\times T$ tile of $\mathbf{C}$. For our first
+tiled implementation, let us give that block $T\times T$ threads as well.
+Thread $(t_y,t_x)$ owns the output at local position $(t_y,t_x)$ inside the
+tile.
+
+Each input tile also contains $T^2$ values. Since the block has $T^2$ threads,
+the loading work divides naturally: every thread copies one value from
+$\mathbf{A}$ and one value from $\mathbf{B}$ into shared memory. After the
+complete tiles have arrived, that thread uses one row of the shared
+$\mathbf{A}$ tile and one column of the shared $\mathbf{B}$ tile to update its
+output.
+
+Here is the same loop visually. Watch what stays fixed and what changes. The
+$\mathbf{C}$ tile stays fixed. The shared $\mathbf{A}$ and $\mathbf{B}$ tiles
+are reused for one chunk of $K$, then overwritten with the next chunk only after
+every thread is done reading them.
+
+{% include figure.liquid path="assets/gemm/shared-memory-tiling.gif" class="img-fluid" alt="Animation of shared-memory tiled GEMM. A block owns one fixed tile of C, cooperatively loads A and B tiles into shared memory, waits at the first barrier, computes partial dot products, waits at the second barrier, then overwrites shared memory with the next K tile." %}
+
+The complete schedule is:
+
+```text
+create a shared tile for A
+create a shared tile for B
+
+row, column <- the output element owned by this thread
+sum <- 0
+
+for tile_start from 0 to K - 1 in steps of tile_size:
+    each thread loads one A value into the shared A tile
+    each thread loads one B value into the shared B tile
+    use zero when a value falls outside the matrix
+
+    wait until both tiles are complete
+
+    for inner from 0 to tile_size - 1:
+        sum <- sum + A_tile[local_row, inner]
+                   * B_tile[inner, local_column]
+
+    wait until every thread has finished using the tiles
+
+if row and column are inside C:
+    C[row, column] <- sum
+```
+
+Why do we need two barriers?
+
+The tile is loaded cooperatively. Every thread contributes only one value, but
+the dot product performed by one thread reads values loaded by many other
+threads. Without the first barrier, a fast thread could begin its dot product
+while some entries of the shared tiles have not been written yet. It would
+then multiply incomplete or stale data.
+
+The second barrier protects the same shared-memory arrays from being reused too
+early. After finishing its own dot product, a fast thread may move to the next
+iteration and start loading the next pair of tiles. A slower thread may still
+be reading the current pair. Without a barrier between those two actions, the
+fast thread could overwrite a value that the slower thread has not used yet.
+
+So the first barrier separates **loading** from **reading**, and the second
+separates **reading the current tiles** from **overwriting them with the next
+tiles**.
+
+Also notice the zeroes for out-of-bounds values. We cannot just return from the
+kernel when one thread falls outside the matrix because the other threads will
+eventually wait for it at `__syncthreads()`. Instead, edge threads load zero
+and still participate in the barriers.
+
+### Cost after tiling
+
+Let's count the same $4\times4$ example with tile size 2.
+
+During the first chunk of $K$, the block loads this much data into shared
+memory:
+
+| Tile | Values loaded |
+|---|---:|
+| $\mathbf{A}^{(0)}$ | $2\times2=4$ |
+| $\mathbf{B}^{(0)}$ | $2\times2=4$ |
+| **Total** | **8 values** |
+
+These 8 values update the four outputs in the fixed $\mathbf{C}$ tile:
+
+$$
+\begin{bmatrix}
+C_{00}&C_{01}\\
+C_{10}&C_{11}
+\end{bmatrix}.
+$$
+
+Each output gets two updates from this chunk. For example,
+
+$$
+C_{00}
+  \mathrel{+}=a_{00}b_{00}
+  +a_{01}b_{10}.
+$$
+
+In CUDA, this update usually becomes a fused multiply-add, or FMA:
+
+```text
+sum <- sum + a * b
+```
+
+One FMA is one instruction, but it represents two floating-point operations:
+one multiply and one add.
+
+So for this one chunk, the block performs
+
+$$
+4 \text{ outputs}\times2 \text{ FMAs per output}
+  =8 \text{ FMAs}.
+$$
+
+That is
+
+$$
+8\times2=16 \quad \text{FLOPs}.
+$$
+
+The global-memory traffic for the chunk is
+
+$$
+8 \text{ FP32 values}\times4
+  =32 \quad \text{bytes}.
+$$
+
+So the arithmetic intensity for this tiled chunk is
+
+$$
+\frac{16}{32}
+  =0.5 \quad \text{FLOPs/byte}.
+$$
+
+That is already twice the requested-byte intensity of the direct kernel. The
+reason is not that we changed the math. The reason is that the 8 values loaded
+into shared memory were reused across four outputs.
+
+Now generalize the same count to a $T\times T$ tile.
+
+For one chunk of $K$, the block loads
 
 $$
 T^2+T^2=2T^2
 $$
 
-values from global memory. It then performs $T^3$ FMAs, because there are
-$T^2$ output elements and each receives $T$ multiply-adds.
+values from global memory. Those values update $T^2$ outputs. Each output gets
+$T$ fused multiply-adds from this chunk, so the block performs
 
-Each $\mathbf{A}$ value is used by $T$ output columns. Each $\mathbf{B}$ value
-is used by $T$ output rows. The input tiles cross global memory once, then
-shared memory distributes them to all the threads that need them.
+$$
+T^3 \quad \text{FMAs}.
+$$
 
-For FP32, the arithmetic intensity of one tile multiplication, ignoring the
-eventual output store, is
+Since one FMA counts as two FLOPs, the arithmetic intensity at the
+global-memory boundary is
 
 $$
 \begin{aligned}
@@ -466,233 +604,294 @@ AI_{\text{tile}}
 \end{aligned}
 $$
 
-The direct kernel approached $0.25$ FLOPs/byte before cache effects. A tile of
-width 16 gives $4$ FLOPs/byte at the global-memory boundary, while a tile of
-width 32 gives $8$ FLOPs/byte.
+The intensity now grows with $T$. This time the improvement did not come from
+changing how a warp groups its requests. It came from making one global-memory
+load feed many multiply-adds.
 
-For rectangular block tiles of shape $B_M\times B_N$ and an inner tile width
-$B_K$, the same calculation becomes
+We have now fixed global-memory reuse. But if we inspect the inner loop, there
+is another problem waiting for us.
 
-$$
-AI_{\text{tile}}
-  =\frac{2B_MB_NB_K}
-         {4(B_MB_K+B_KB_N)}
-  =\frac{B_MB_N}{2(B_M+B_N)}.
-$$
+## One output per thread is not enough
 
-Notice that $B_K$ cancels. Increasing $B_K$ changes loop overhead, shared
-memory use, and synchronization frequency, but it does not change the reuse
-factor by itself.
+Shared memory fixed the global-memory problem. The block now loads a tile once
+and reuses it across many output elements.
 
-### Turning tiling into code
+Sounds neat and perfect right?
 
-For the first tiled kernel, use a $16\times16$ block. Every thread loads one
-value into each shared-memory tile and computes one output element:
+Except we should do the same thing we did in GEMV: freeze the kernel and look
+at what is happening at one instant.
 
-```cpp
-template <int tile_size>
-__global__ void tiled_gemm_kernel(
-    const float* __restrict__ A,
-    const float* __restrict__ B,
-    float* __restrict__ C,
-    int M,
-    int N,
-    int K
-) {
-    __shared__ float A_tile[tile_size][tile_size];
-    __shared__ float B_tile[tile_size][tile_size];
+This time, instead of freezing a warp, freeze one thread.
 
-    int local_column = threadIdx.x;
-    int local_row = threadIdx.y;
-    int column = blockIdx.x * tile_size + local_column;
-    int row = blockIdx.y * tile_size + local_row;
-
-    float sum = 0.0f;
-
-    for (int tile_start = 0;
-         tile_start < K;
-         tile_start += tile_size) {
-        int A_column = tile_start + local_column;
-        int B_row = tile_start + local_row;
-
-        A_tile[local_row][local_column] =
-            row < M && A_column < K
-                ? A[row * K + A_column]
-                : 0.0f;
-
-        B_tile[local_row][local_column] =
-            B_row < K && column < N
-                ? B[B_row * N + column]
-                : 0.0f;
-
-        __syncthreads();
-
-        #pragma unroll
-        for (int inner = 0; inner < tile_size; ++inner) {
-            sum += A_tile[local_row][inner]
-                 * B_tile[inner][local_column];
-        }
-
-        __syncthreads();
-    }
-
-    if (row < M && column < N) {
-        C[row * N + column] = sum;
-    }
-}
-```
-
-The zero fill handles an incomplete tile at the right or bottom edge. It also
-handles the final inner tile when $K$ is not a multiple of 16. Every thread
-must still reach both barriers, so the bounds check surrounds the memory
-operation instead of returning early from the kernel.
-
-The global loads are coalesced:
-
-- neighboring x-lanes load neighboring columns from a row of $\mathbf{A}$;
-- those same lanes load neighboring columns from a row of $\mathbf{B}$; and
-- neighboring x-lanes eventually write neighboring elements of $\mathbf{C}$.
-
-We have now created reuse at the global-memory boundary. But inside the tile,
-each thread still computes only one output.
-
-## More than one output per thread
-
-Look at the inner loop of the basic tiled kernel:
+Say a thread owns only one output:
 
 ```text
-load one A value from shared memory
-load one B value from shared memory
-perform one FMA
+result -> C[row, column]
 ```
 
-Shared memory is much faster than global memory, but two shared-memory loads
-for every FMA can still leave the arithmetic pipelines waiting. We can reuse
-the values one more time by giving each thread several accumulators.
-
-This creates a hierarchy of ownership:
+At one value of `inner`, it does this:
 
 ```text
-grid
-  -> one block owns a BM x BN output tile
-       -> one thread owns a TM x TN output micro-tile
-            -> one register owns one output accumulator
+A_value <- A_tile[row, inner]
+B_value <- B_tile[inner, column]
+
+result <- result + A_value * B_value
 ```
 
-Shared memory reuses data across threads in the block. Registers reuse data
-across the outputs owned by one thread.
+So for one multiply-add, the thread performs two shared-memory loads. One load
+comes from the shared $\mathbf{A}$ tile, and one load comes from the shared
+$\mathbf{B}$ tile.
 
-### One-dimensional register tiling
+Now look at the output right below it:
 
-First let one thread compute $T_M$ output rows and one output column. At a
-fixed inner position, the thread needs
-
-- $T_M$ values from the shared $\mathbf{A}$ tile;
-- one value from the shared $\mathbf{B}$ tile; and
-- $T_M$ accumulators in registers.
-
-The single $\mathbf{B}$ value is reused across all $T_M$ FMAs:
-
-```cpp
-float B_value = B_tile[inner][thread_column];
-
-#pragma unroll
-for (int result_row = 0; result_row < TM; ++result_row) {
-    results[result_row] +=
-        A_tile[thread_row * TM + result_row][inner]
-        * B_value;
-}
+```text
+C[row + 0, column] uses B_tile[inner, column]
+C[row + 1, column] uses B_tile[inner, column]
+C[row + 2, column] uses B_tile[inner, column]
+...
 ```
 
-For $T_M=8$, nine shared-memory loads enable eight FMAs. The basic tiled
-kernel needed sixteen loads for those same eight FMAs. This is useful reuse,
-but it is one-sided: values from $\mathbf{B}$ are reused while every
-$\mathbf{A}$ value still feeds one accumulator in that thread.
+All of these outputs need the same $\mathbf{B}$ value at this value of
+`inner`. But in our current kernel, they belong to different threads. Each
+thread loads that same $\mathbf{B}$ value from shared memory, uses it once, and
+moves on.
 
-### Two-dimensional register tiling
+See the problem? Shared memory made the value closer, but it did not make the
+thread reuse it. The reuse exists between neighboring outputs, while each
+thread owns only one output.
 
-Now give one thread a $T_M\times T_N$ rectangle of outputs. For one inner
-position, the thread loads
+What if one thread owned two outputs from the same column?
 
-$$
-T_M \quad \text{values from }\mathbf{A}
-$$
-
-and
-
-$$
-T_N \quad \text{values from }\mathbf{B}.
-$$
-
-It then forms their outer product:
-
-$$
-\text{results}_{i,j}
-  \mathrel{+}=A_iB_j,
-\qquad
-0\le i<T_M,
-\quad
-0\le j<T_N.
-$$
-
-```cpp
-float A_values[TM];
-float B_values[TN];
-
-for (int inner = 0; inner < BK; ++inner) {
-    #pragma unroll
-    for (int i = 0; i < TM; ++i) {
-        A_values[i] = A_tile[thread_row * TM + i][inner];
-    }
-
-    #pragma unroll
-    for (int j = 0; j < TN; ++j) {
-        B_values[j] = B_tile[inner][thread_column * TN + j];
-    }
-
-    #pragma unroll
-    for (int i = 0; i < TM; ++i) {
-        #pragma unroll
-        for (int j = 0; j < TN; ++j) {
-            results[i][j] += A_values[i] * B_values[j];
-        }
-    }
-}
+```text
+result0 -> C[row + 0, column]
+result1 -> C[row + 1, column]
 ```
 
-For $T_M=T_N=8$, sixteen shared-memory loads enable 64 FMAs. Each loaded
-$\mathbf{A}$ value is used across eight output columns, and each loaded
-$\mathbf{B}$ value is used across eight output rows.
+Now at the same `inner`, the thread can do
 
-The shared-memory arithmetic intensity of this inner step is
+```text
+B_value <- B_tile[inner, column]
+
+result0 <- result0 + A_tile[row + 0, inner] * B_value
+result1 <- result1 + A_tile[row + 1, inner] * B_value
+```
+
+Now one shared-memory load from $\mathbf{B}$ produces two multiply-adds. The
+two partial sums live in registers, so the thread can keep both of them around
+while it walks through the loop.
+
+That is the next target. We keep the same block tile, but give each thread a
+little more ownership inside that tile.
+
+## 1D block tiling
+
+Start with the smallest useful change. Instead of giving a thread one output,
+give it a vertical strip of outputs:
+
+```text
+result0 -> C[row + 0, column]
+result1 -> C[row + 1, column]
+result2 -> C[row + 2, column]
+...
+```
+
+Let us use four outputs for the example. At one value of `inner`, all four
+outputs need the same $\mathbf{B}$ value:
+
+```text
+B_value <- B_tile[inner, thread_column]
+
+result0 <- result0 + A_tile[row + 0, inner] * B_value
+result1 <- result1 + A_tile[row + 1, inner] * B_value
+result2 <- result2 + A_tile[row + 2, inner] * B_value
+result3 <- result3 + A_tile[row + 3, inner] * B_value
+```
+
+The thread still loads four different $\mathbf{A}$ values, because the four
+outputs come from four different rows. But it loads the $\mathbf{B}$ value
+once and reuses it four times.
+
+This is one-dimensional register tiling. One dimension of the output tile now
+lives inside a single thread.
+
+Here is the same idea visually. Watch the $\mathbf{B}$ value: it is loaded once
+and then reused across the vertical strip of outputs owned by the thread.
+
+{% include figure.liquid path="assets/gemm/one-dimensional-register-tiling.gif" class="img-fluid" alt="Animation of one-dimensional register tiling. One thread owns a vertical strip of outputs, loads one B value, and reuses it across several multiply-adds with different A values." %}
+
+### Cost of 1D block tiling
+
+In the four-output example, the thread performs four multiply-adds.
+
+The old tiled kernel would need two shared-memory loads per multiply-add:
+
+```text
+4 multiply-adds -> 8 shared-memory loads
+```
+
+With the vertical strip, the thread loads four $\mathbf{A}$ values and one
+$\mathbf{B}$ value:
+
+```text
+4 multiply-adds -> 5 shared-memory loads
+```
+
+So we did not change the math. We changed which outputs one thread owns, and
+that let one $\mathbf{B}$ load feed several multiply-adds.
+
+If the thread owns $T_M$ outputs in the same column, then one inner-loop step
+uses
 
 $$
-AI_{\text{register tile}}
-  =\frac{2T_MT_N}{4(T_M+T_N)}
-  =\frac{T_MT_N}{2(T_M+T_N)}
-  \quad \text{FLOPs/byte}.
+T_M + 1
 $$
 
-For $T_M=T_N=8$, that is
+shared-memory loads to produce
 
 $$
-\frac{8\cdot8}{2(8+8)}=2
-\quad \text{FLOPs per shared-memory byte}.
+T_M
 $$
 
-The basic one-output thread achieved
+multiply-adds. The bigger $T_M$ gets, the more useful work we get out of the
+one $\mathbf{B}$ value loaded into a register.
+
+But notice the asymmetry. We reused $\mathbf{B}$. We did not reuse
+$\mathbf{A}$. Each $\mathbf{A}$ value still updates exactly one result inside
+the thread.
+
+Can we reuse both?
+
+## 2D block tiling
+
+To reuse both sides, the thread needs outputs in both directions.
+
+Instead of a vertical strip, give one thread a small rectangle of
+$\mathbf{C}$:
+
+```text
+result00 -> C[row + 0, column + 0]
+result01 -> C[row + 0, column + 1]
+result10 -> C[row + 1, column + 0]
+result11 -> C[row + 1, column + 1]
+```
+
+This little rectangle is the thread's micro-tile. The partial sums are stored
+in registers.
+
+Now freeze the thread at one value of `inner`.
+
+It loads two values from the shared $\mathbf{A}$ tile:
+
+```text
+A0 <- A_tile[row + 0, inner]
+A1 <- A_tile[row + 1, inner]
+```
+
+and two values from the shared $\mathbf{B}$ tile:
+
+```text
+B0 <- B_tile[inner, column + 0]
+B1 <- B_tile[inner, column + 1]
+```
+
+Now every $\mathbf{A}$ value can meet every $\mathbf{B}$ value:
+
+```text
+result00 <- result00 + A0 * B0
+result01 <- result01 + A0 * B1
+result10 <- result10 + A1 * B0
+result11 <- result11 + A1 * B1
+```
+
+That is the entire trick. We loaded four shared-memory values and produced four
+multiply-adds. More importantly, each loaded value was used twice.
+
+This is a tiny outer product inside one thread. A column of $\mathbf{A}$
+values meets a row of $\mathbf{B}$ values, and together they update a small
+rectangle of $\mathbf{C}$.
+
+The animation below shows that crossing more directly. The $\mathbf{A}$ values
+move down the rows, the $\mathbf{B}$ values move across the columns, and the
+thread updates the whole $2\times2$ register micro-tile.
+
+{% include figure.liquid path="assets/gemm/two-dimensional-register-tiling.gif" class="img-fluid" alt="Animation of two-dimensional register tiling. One thread owns a 2 by 2 register micro-tile, loads two A values and two B values, and reuses them in both directions to update four outputs." %}
+
+For a general $T_M\times T_N$ micro-tile, the inner loop looks like this:
+
+```text
+for inner from 0 to BK - 1:
+    load TM values from A_tile into registers
+    load TN values from B_tile into registers
+
+    for each A value:
+        for each B value:
+            update one result register
+```
+
+Every $\mathbf{A}$ value is reused across $T_N$ columns. Every $\mathbf{B}$
+value is reused across $T_M$ rows.
+
+### Cost of 2D block tiling
+
+Stay with the $2\times2$ micro-tile for one more second.
+
+The thread loaded
 
 $$
-\frac{2}{4(1+1)}=0.25
-\quad \text{FLOPs per shared-memory byte}.
+2+2=4
 $$
 
-So the register micro-tile increases reuse at the shared-memory boundary by
-8x.
+shared-memory values and performed
 
-### The complete 2D register-tiled schedule
+$$
+2\times2=4
+$$
 
-Use
+multiply-adds.
+
+For a larger $8\times8$ micro-tile, the same idea gives
+
+$$
+8+8=16 \quad \text{shared-memory loads},
+$$
+
+$$
+8\times8=64 \quad \text{multiply-adds}.
+$$
+
+Compare that with the first shared-memory tiled kernel. There, 16
+shared-memory loads would only produce 8 multiply-adds, because every
+multiply-add loaded one $\mathbf{A}$ value and one $\mathbf{B}$ value.
+
+Here, the same 16 loads produce 64 multiply-adds because the values are reused
+inside the thread.
+
+That is why register tiling matters. Shared memory made global loads reusable
+across the block. Registers make shared-memory loads reusable inside one
+thread.
+
+So we can just keep making the thread tile larger and reuse even
+more? In reality, no, because registers are limited.
+
+Every output owned by a thread needs one accumulator register. A $2\times2$
+micro-tile needs 4 accumulators. An $8\times8$ micro-tile needs
+
+$$
+8\times8=64
+$$
+
+accumulator registers, before counting loop variables, addresses, and the
+temporary $\mathbf{A}$ and $\mathbf{B}$ fragments.
+
+So the $\textbf{tile size is a tradeoff}$.
+
+Larger micro-tiles reuse shared-memory values
+more aggressively, but they also increase register pressure. If a thread uses
+too many registers, fewer warps can live on the SM at the same time. If the
+pressure gets really high, the compiler may spill values to local memory, which
+is exactly what we were trying to avoid.
+
+The final kernel uses
 
 $$
 B_M=B_N=128,
@@ -700,168 +899,121 @@ B_M=B_N=128,
 \qquad T_M=T_N=8.
 $$
 
-The block owns $128\times128$ outputs. Since every thread owns $8\times8$ of
-them, the block needs
+That means one block owns a $128\times128$ tile of $\mathbf{C}$, and each
+thread owns an $8\times8$ micro-tile inside it. So the block needs
 
 $$
-\frac{128}{8}\frac{128}{8}
-  =16\cdot16
-  =256 \quad \text{threads}.
+\frac{128}{8}\times\frac{128}{8}
+  =16\times16
+  =256
 $$
 
-For every 8-wide step along $K$, those 256 threads cooperatively load
+threads.
+
+For one 8-wide step along $K$, the block loads
 
 $$
-128\cdot8+8\cdot128=2048
+128\times8+8\times128=2048
 $$
 
-FP32 values, or 8192 bytes, into shared memory. They then perform
+FP32 values into shared memory. Those values update the same
+$128\times128$ output tile for 8 positions of the inner dimension.
 
-$$
-128\cdot128\cdot8=131{,}072 \quad \text{FMAs}
-$$
+Do enough reuse to make shared-memory loads worthwhile, but not so much per-thread
+state that the kernel collapses under register pressure.
 
-before the next pair of global-memory tiles is needed.
+## Final kernel
 
-The complete implementation in `05_2d_register_tiled_kernel.cu` uses a
-strided loading loop because 2048 tile elements must be loaded by only 256
-threads. Each thread loads several values, the block synchronizes, and then
-the register outer products begin.
+Now we can put the pieces together. But pasting the complete CUDA kernel here
+would interrupt the flow more than it would help.
 
-<aside class="callout"><strong>Why not make the micro-tile enormous?</strong>
+At this point, the final implementation is just the ideas above combined in one place:
 
-A larger micro-tile creates more reuse, but every output needs an accumulator.
-An $8\times8$ tile already asks for 64 accumulator registers per thread before
-counting addresses and temporary values. More registers can reduce the number
-of resident warps, and enough pressure can make the compiler spill values into
-local memory. Register tiling trades occupancy for reuse; it does not remove a
-cost for free.
-
-</aside>
-
-## Vectorizing the tile loads
-
-The register-tiled kernel has reduced how often input tiles cross global
-memory. We can now reduce the number of instructions used to move each tile.
-
-A scalar copy moves one FP32 value per load instruction:
-
-```cpp
-shared[destination + 0] = global[source + 0];
-shared[destination + 1] = global[source + 1];
-shared[destination + 2] = global[source + 2];
-shared[destination + 3] = global[source + 3];
+```text
+one block owns a BM x BN output tile
+one thread owns a TM x TN micro-tile
+for each BK chunk along K:
+    load A and B tiles into shared memory
+    synchronize
+    update the register micro-tile
+    synchronize
+write the register results back to C
 ```
 
-When the address is 16-byte aligned, a `float4` copy expresses the same 16
-bytes as one vector load:
+The complete CUDA source, including the launcher, lives here:
 
-```cpp
-float4 values =
-    *reinterpret_cast<const float4*>(&global[source]);
-*reinterpret_cast<float4*>(&shared[destination]) = values;
-```
+[`kernels/gemm/05_2d_register_tiled_kernel.cu`](https://github.com/athleticcoder21/inference-book/blob/main/kernels/gemm/05_2d_register_tiled_kernel.cu)
 
-Vectorization does **not** make those 16 bytes disappear. Coalescing already
-combines neighboring lanes' requests into memory transactions. The benefit is
-that each thread issues fewer load instructions and gives the compiler an
-explicit alignment guarantee.
+A few things are worth looking for when you open that file:
 
-That guarantee is also the danger. A `float4` access requires suitable
-alignment and four valid consecutive elements. The vectorized kernel checks
-the leading dimensions and tile edges, then falls back to scalar copies when
-those conditions are not satisfied. Casting an arbitrary pointer and hoping
-it is aligned is undefined behaviour, not an optimization.
+- `A_tile` and `B_tile` are the shared-memory tiles.
+- `results` is the per-thread register micro-tile.
+- the two `__syncthreads()` calls are the same two barriers we discussed earlier.
+- the inner loop loads short $\mathbf{A}$ and $\mathbf{B}$ fragments into
+  registers and updates the thread's micro-tile.
 
-The same idea applies to the output. Every row of an $8\times8$ thread
-micro-tile contains eight consecutive floats, so an aligned interior tile can
-be written with two `float4` stores per row.
+## Comparing the kernels
 
-## What each optimization changed
+Let's put the complete progression together:
 
-We can now separate the optimization ladder by memory boundary:
+| Kernel | Outputs per thread | What changed | What still costs us |
+|---|---:|---|---|
+| Naive row-first | 1 | Direct implementation | Strided $\mathbf{A}$ loads and $\mathbf{C}$ stores |
+| Coalesced direct | 1 | x-lanes own consecutive columns | Inputs are still requested for every output |
+| Shared-memory tiled | 1 | One global load feeds many threads | Two shared-memory loads per multiply-add |
+| 1D register tiled | $T_M$ | Reuses one $\mathbf{B}$ value | Reuse is only in one direction |
+| 2D register tiled | $T_MT_N$ | Reuses both input fragments | Register pressure |
 
-| Kernel | Outputs per thread | Global-memory change | Shared-memory change | Main cost introduced |
-|---|---:|---|---|---|
-| Row-first direct | 1 | Strided $\mathbf{A}$ and $\mathbf{C}$ access | None | Repeated global loads |
-| Coalesced direct | 1 | Coalesced $\mathbf{B}$ and $\mathbf{C}$ access | None | Repeated global loads remain |
-| Shared-memory tiled | 1 | Each input tile is loaded once per block | 2 loads per FMA per thread | Tile storage and barriers |
-| 1D register tiled | $T_M$ | Same block-level reuse | Reuses one $\mathbf{B}$ value | More accumulators |
-| 2D register tiled | $T_MT_N$ | Same block-level reuse | Reuses both $\mathbf{A}$ and $\mathbf{B}$ values | Register pressure |
-| Vectorized 2D tile | $T_MT_N$ | Fewer wide load/store instructions | Same register reuse | Alignment and edge paths |
+Notice how every optimization moves the bottleneck one level closer to the
+compute units.
 
-The changes are cumulative. Register tiling does not replace shared-memory
-tiling; it adds another level of reuse below it. Vectorization does not replace
-coalescing; it reduces instruction count after the access pattern is already
-contiguous.
+First, global-memory access was bad. We fixed coalescing.
 
-## What we should benchmark
+Then, global-memory access was repeated. We added shared-memory tiles.
 
-A cost model tells us what changed. It does not tell us which tile sizes win on
-every GPU or matrix shape. A useful benchmark should report at least
+Then, shared-memory values were used only once per thread. We added register
+micro-tiles.
 
-- GPU model and CUDA version;
-- $M$, $N$, and $K$ separately, not only square matrices;
-- warm-up count and timing method;
-- achieved TFLOPs;
-- global-load efficiency and DRAM throughput;
-- shared-memory throughput and bank conflicts;
-- registers per thread, occupancy, and any local-memory spills; and
-- numerical error against a trusted reference such as cuBLAS.
-
-The most revealing experiments vary one dimension at a time. A square
-$4096\times4096$ multiplication rewards large tiles and reuse. A tall, narrow
-projection can expose wasted work at tile edges. Small matrices may be limited
-by launch overhead and may fit in cache well enough to hide differences that
-are obvious at realistic model sizes.
-
-We should also compare against cuBLAS without pretending that a CUDA-core FP32
-teaching kernel has the same goal as a production library. cuBLAS selects
-different algorithms by shape, datatype, layout, hardware, and workspace. Its
-value as a baseline is precisely that it shows how much room remains.
+I am deliberately not putting performance numbers in this table yet. A number
+without a GPU model, matrix shape, CUDA version, warm-up, and timing method is
+not useful. These kernels need to be benchmarked against the same reference on
+the same machine. We should also inspect register usage and spills, because a
+kernel with more reuse on paper can still lose if the compiler runs out of
+registers.
 
 ## Main takeaways
 
-GEMM optimization is a story about preserving the same value across several
-levels of the memory hierarchy long enough to use it more than once.
+- **GEMM has a lot of arithmetic intensity only when we actually reuse the
+  inputs.** The equation gives us the opportunity. The kernel has to make that
+  reuse happen.
 
-- **GEMM has high potential arithmetic intensity.** Its ideal intensity grows
-  with matrix size because every input value can contribute to many outputs.
+- **Thread mapping matters before tiling even begins.** Since
+  `threadIdx.x` changes fastest inside a warp, mapping it to output columns
+  gives us consecutive $\mathbf{B}$ reads and $\mathbf{C}$ writes.
 
-- **Potential reuse is not automatic reuse.** A one-thread-per-output kernel
-  requests $2MNK$ input elements even though the two input matrices contain
-  only $MK+KN$ elements.
+- **Coalescing and reuse are different things.** Coalescing makes one warp
+  request memory efficiently. Tiling removes repeated global-memory requests
+  by keeping input values in shared memory.
 
-- **Thread ownership determines coalescing.** Since `threadIdx.x` changes
-  fastest inside a warp, mapping x to output columns gives consecutive lanes
-  consecutive $\mathbf{B}$ loads and $\mathbf{C}$ stores.
+- **A block owns one fixed output tile.** It walks along the $K$ dimension,
+  loading pairs of input tiles and accumulating partial dot products into the
+  same output values.
 
-- **A block tile creates deliberate global-memory reuse.** The block loads one
-  tile from each input into shared memory and uses them to update many output
-  elements before advancing along $K$.
+- **Shared-memory tiling is only the first level of reuse.** If every thread
+  computes one output, it still loads two shared values for every multiply-add.
 
-- **The $K$ dimension is accumulated, not tiled independently.** Every pair of
-  input tiles produces only a partial output tile. The registers hold those
-  partial sums until the complete inner dimension has been visited.
+- **Register tiling gives one thread multiple outputs.** A 2D micro-tile lets
+  the thread load short fragments from $\mathbf{A}$ and $\mathbf{B}$ and form
+  an outer product, reusing both fragments many times.
 
-- **Register tiling creates a second level of reuse.** A thread loads short
-  vectors from the shared tiles and forms an outer product, updating a grid of
-  register accumulators.
+- **Bigger tiles are not automatically better.** Shared-memory capacity,
+  register pressure, occupancy, edge waste, and matrix shape all affect the
+  result.
 
-- **More reuse consumes more resources.** Larger block tiles need more shared
-  memory. Larger thread tiles need more registers. Both can reduce occupancy
-  or make edge handling more wasteful.
+The GEMM equation never changed. What changed was ownership. First one thread
+owned one output. Then one block owned an output tile. Finally, every thread
+owned a micro-tile inside that block and kept its partial results in registers.
 
-- **Vectorization reduces instructions, not bytes.** It is useful only when
-  alignment and bounds make the wider access valid.
-
-- **The optimization target moves inward.** First global memory is the
-  bottleneck. Shared-memory tiling moves the pressure to shared memory.
-  Register tiling moves more of the work into FMAs. A good GEMM kernel keeps
-  repeating this process until the arithmetic pipelines, rather than data
-  delivery, set the pace.
-
-The equation $\mathbf{C}=\mathbf{A}\mathbf{B}$ never changed. What changed was
-the unit of ownership: first one thread owned one output, then one block owned
-an output tile, and finally each thread owned a register micro-tile inside that
-block. Every step made reuse explicit at one more level of the machine.
+That is the main lesson. A fast GEMM kernel is still just the same collection
+of dot products. The hard part is deciding how long each value stays close to
+the processors, and how many times we can use it before loading something new.

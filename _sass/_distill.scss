@@ -86,19 +86,34 @@ d-article {
   d-contents {
     align-self: start;
     grid-column: 1 / 4;
-    grid-row: auto / span 4;
+    // Keep the contents rail in the first article row without letting its
+    // height size that row. A long TOC used to span the first four rows, so
+    // CSS Grid distributed its height across the opening paragraphs and
+    // created enormous gaps around display equations.
+    grid-row: 1;
+    height: 0;
+    min-height: 0;
     justify-self: end;
     position: sticky;
     top: 85px;
-    padding-left: 1em;
-    padding-right: 2em;
-    border-right: 1px solid var(--global-divider-color);
-    width: fit-content;
+    box-sizing: border-box;
+    width: 250px;
+    min-width: 0;
     max-width: 250px;
+    overflow: visible;
 
     nav {
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
+      padding-left: 1em;
+      padding-right: 2em;
+      border-right: 1px solid var(--global-divider-color);
+
       a {
         border-bottom: none !important;
+        white-space: normal;
+        overflow-wrap: anywhere;
 
         &:hover {
           border-bottom: 1px solid var(--global-text-color) !important;
