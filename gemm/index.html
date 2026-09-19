@@ -478,26 +478,26 @@
           
           
           <div>
-            <a href="#1d-block-tiling">1D block tiling</a>
+            <a href="#1d-register-tiling">1D register tiling</a>
           </div>
           
           <ul>
             
             <li>
-              <a href="#cost-of-1d-block-tiling">Cost of 1D block tiling</a>
+              <a href="#cost-of-1d-register-tiling">Cost of 1D register tiling</a>
             </li>
             
           </ul>
           
           
           <div>
-            <a href="#2d-block-tiling">2D block tiling</a>
+            <a href="#2d-register-tiling">2D register tiling</a>
           </div>
           
           <ul>
             
             <li>
-              <a href="#cost-of-2d-block-tiling">Cost of 2D block tiling</a>
+              <a href="#cost-of-2d-register-tiling">Cost of 2D register tiling</a>
             </li>
             
             <li>
@@ -561,12 +561,12 @@ $\mathbf{A}$ and one column of $\mathbf{B}$:</p>
   
 </figure>
 
-<p>Alright, so let’s get started. We can assign one thread to every element of $\mathbf{C}$, which will compute everything parallely.
-This essentially means that every thread walks over the $K$ dimension, calculates one dot product, and
-writes one value to $\mathbf{C}$.</p>
+<p>Alright, so let’s get started. The most direct CUDA kernel assigns one thread
+to every element of $\mathbf{C}$. Each thread walks over the $K$ dimension,
+computes one dot product, and writes one value to $\mathbf{C}$.</p>
 
-<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>row    &lt;- block_y * block_width  + thread_x
-column &lt;- block_x * block_height + thread_y
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>row    &lt;- block_y * block_height + thread_x
+column &lt;- block_x * block_width  + thread_y
 
 if row or column is outside C:
     stop
@@ -579,8 +579,8 @@ for inner from 0 to K - 1:
 C[row, column] &lt;- sum
 </code></pre></div></div>
 
-<p>Let’s see how efficient this kernel, we just designed is. One thread calculates a dot product of length $K$. That is $K$
-multiplications and $K-1$ additions:</p>
+<p>Let’s see how efficient this direct kernel is. One thread calculates a dot
+product of length $K$. That is $K$ multiplications and $K-1$ additions:</p>
 
 \[2K-1 \quad \text{FLOPs}.\]
 
@@ -834,8 +834,46 @@ outputs?</p>
 <p>Until now, every thread has behaved like it is alone. It loads the values it
 needs, computes one output, and writes the answer.</p>
 
-<p>Shared memory changes the unit of cooperation. A block of threads now works on
-one small tile of $\mathbf{C}$ together.</p>
+<p>Shared memory changes the unit of cooperation. Instead of thinking “one thread
+computes one dot product from global memory,” we think:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>one block owns one small rectangle of C
+the block loads the matching small rectangles of A and B
+all threads reuse those loaded values
+</code></pre></div></div>
+
+<p>That small rectangle is a <strong>tile</strong>. Tiling is not a different matrix
+multiplication algorithm. It is the same dot products, but grouped so nearby
+threads can share nearby data.</p>
+
+<p>There are three tiles to keep separate:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Tile</th>
+      <th>Where it lives</th>
+      <th>What it means</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Output tile</td>
+      <td>Registers, then $\mathbf{C}$</td>
+      <td>The fixed rectangle of $\mathbf{C}$ owned by one block</td>
+    </tr>
+    <tr>
+      <td>$\mathbf{A}$ input tile</td>
+      <td>Shared memory</td>
+      <td>The next slice of the needed rows of $\mathbf{A}$</td>
+    </tr>
+    <tr>
+      <td>$\mathbf{B}$ input tile</td>
+      <td>Shared memory</td>
+      <td>The next slice of the needed columns of $\mathbf{B}$</td>
+    </tr>
+  </tbody>
+</table>
 
 <p>Inside that block, each thread can still own one output element. The difference
 is that the inputs are no longer loaded separately by every thread. The block
@@ -851,7 +889,7 @@ $K$ in chunks:</p>
 <div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>load the next T columns from the needed rows of A
 load the next T rows from the needed columns of B
 synchronize
-use those two tiles to add a partial result to C
+use those two input tiles to add a partial result to the fixed C tile
 synchronize
 move to the next K tile
 </code></pre></div></div>
@@ -871,9 +909,9 @@ move to the next K tile
   
 </figure>
 
-<p>The output tile does not move. The $\mathbf{A}$ and $\mathbf{B}$ tiles move
-along $K$, and every pair contributes one more piece to the same output
-accumulators.</p>
+<p>This is the key picture: the output tile does not move. The $\mathbf{A}$ and
+$\mathbf{B}$ input tiles move along $K$, and every pair contributes one more
+piece to the same output accumulators.</p>
 
 <h3 id="a-small-example">A small example</h3>
 
@@ -886,8 +924,9 @@ C_{10}&amp;C_{11}
 \end{bmatrix}.\]
 
 <p>Every one of these four outputs is a dot product of length 4. With a tile size
-of 2, we do not compute the full dot product in one shot. We compute two terms,
-then the next two terms.</p>
+of 2, the block cannot finish the dot products from one pair of input tiles. It
+computes the first two terms, keeps the partial sums, then loads the next two
+terms.</p>
 
 <p>First, take the $k=0,1$ part:</p>
 
@@ -943,10 +982,10 @@ b_{30}&amp;b_{31}
 <p>which is the complete dot product. The other three outputs in the tile are
 completed in the same way.</p>
 
-<p>So we are not multiplying random small matrices and somehow joining them later.
-Each block owns one fixed tile of $\mathbf{C}$, and the tiles from
-$\mathbf{A}$ and $\mathbf{B}$ are just the next pieces of the dot products for
-that same output tile.</p>
+<p>So tiling is not “multiply random small matrices and stitch the answers
+together later.” Each block owns one fixed tile of $\mathbf{C}$. The
+$\mathbf{A}$ and $\mathbf{B}$ tiles are just consecutive $K$-slices needed by
+the dot products for that same output tile.</p>
 
 <h3 id="turning-the-idea-into-code">Turning the idea into code</h3>
 
@@ -1125,9 +1164,10 @@ AI_{\text{tile}}
   \quad \text{FLOPs/byte}.
 \end{aligned}\]
 
-<p>The intensity now grows with $T$. This time the improvement did not come from
-changing how a warp groups its requests. It came from making one global-memory
-load feed many multiply-adds.</p>
+<p>The intensity now grows with $T$. Bigger output tiles create more reuse because
+the same input values feed more outputs. This time the improvement did not come
+from changing how a warp groups its requests. It came from making one
+global-memory load feed many multiply-adds.</p>
 
 <p>We have now fixed global-memory reuse. But if we inspect the inner loop, there
 is another problem waiting for us.</p>
@@ -1196,10 +1236,11 @@ result1 &lt;- result1 + A_tile[row + 1, inner] * B_value
 two partial sums live in registers, so the thread can keep both of them around
 while it walks through the loop.</p>
 
-<p>That is the next target. We keep the same block tile, but give each thread a
-little more ownership inside that tile.</p>
+<p>That is the next target. The block still owns a larger output tile, but each
+thread now owns a smaller tile inside it. This smaller per-thread tile is often
+called a <strong>micro-tile</strong>, and its partial sums live in registers.</p>
 
-<h2 id="1d-block-tiling">1D block tiling</h2>
+<h2 id="1d-register-tiling">1D register tiling</h2>
 
 <p>Start with the smallest useful change. Instead of giving a thread one output,
 give it a vertical strip of outputs:</p>
@@ -1225,8 +1266,8 @@ result3 &lt;- result3 + A_tile[row + 3, inner] * B_value
 outputs come from four different rows. But it loads the $\mathbf{B}$ value
 once and reuses it four times.</p>
 
-<p>This is one-dimensional register tiling. One dimension of the output tile now
-lives inside a single thread.</p>
+<p>This is one-dimensional register tiling. One dimension of the block’s output
+tile now lives inside a single thread.</p>
 
 <p>Here is the same idea visually. Watch the $\mathbf{B}$ value: it is loaded once
 and then reused across the vertical strip of outputs owned by the thread.</p>
@@ -1246,7 +1287,7 @@ and then reused across the vertical strip of outputs owned by the thread.</p>
   
 </figure>
 
-<h3 id="cost-of-1d-block-tiling">Cost of 1D block tiling</h3>
+<h3 id="cost-of-1d-register-tiling">Cost of 1D register tiling</h3>
 
 <p>In the four-output example, the thread performs four multiply-adds.</p>
 
@@ -1282,7 +1323,7 @@ the thread.</p>
 
 <p>Can we reuse both?</p>
 
-<h2 id="2d-block-tiling">2D block tiling</h2>
+<h2 id="2d-register-tiling">2D register tiling</h2>
 
 <p>To reuse both sides, the thread needs outputs in both directions.</p>
 
@@ -1295,8 +1336,8 @@ result10 -&gt; C[row + 1, column + 0]
 result11 -&gt; C[row + 1, column + 1]
 </code></pre></div></div>
 
-<p>This little rectangle is the thread’s micro-tile. The partial sums are stored
-in registers.</p>
+<p>This little rectangle is the thread’s register micro-tile. The partial sums are
+stored in registers until the final write to $\mathbf{C}$.</p>
 
 <p>Now freeze the thread at one value of <code class="language-plaintext highlighter-rouge">inner</code>.</p>
 
@@ -1360,7 +1401,7 @@ thread updates the whole $2\times2$ register micro-tile.</p>
 <p>Every $\mathbf{A}$ value is reused across $T_N$ columns. Every $\mathbf{B}$
 value is reused across $T_M$ rows.</p>
 
-<h3 id="cost-of-2d-block-tiling">Cost of 2D block tiling</h3>
+<h3 id="cost-of-2d-register-tiling">Cost of 2D register tiling</h3>
 
 <p>Stay with the $2\times2$ micro-tile for one more second.</p>
 
@@ -1391,6 +1432,8 @@ inside the thread.</p>
 across the block. Registers make shared-memory loads reusable inside one
 thread.</p>
 
+<h3 id="choosing-the-tile-sizes">Choosing the tile sizes</h3>
+
 <p>So we can just keep making the thread tile larger and reuse even
 more? In reality, no, because registers are limited.</p>
 
@@ -1402,7 +1445,7 @@ micro-tile needs 4 accumulators. An $8\times8$ micro-tile needs</p>
 <p>accumulator registers, before counting loop variables, addresses, and the
 temporary $\mathbf{A}$ and $\mathbf{B}$ fragments.</p>
 
-<p>So the $\textbf{tile size is a tradeoff}$.</p>
+<p>So <strong>tile size is a tradeoff</strong>.</p>
 
 <p>Larger micro-tiles reuse shared-memory values
 more aggressively, but they also increase register pressure. If a thread uses
@@ -1432,8 +1475,8 @@ thread owns an $8\times8$ micro-tile inside it. So the block needs</p>
 <p>FP32 values into shared memory. Those values update the same
 $128\times128$ output tile for 8 positions of the inner dimension.</p>
 
-<p>Do enough reuse to make shared-memory loads worthwhile, but not so much per-thread
-state that the kernel collapses under register pressure.</p>
+<p>Do enough reuse to make shared-memory loads worthwhile, but not so much
+per-thread state that the kernel collapses under register pressure.</p>
 
 <h2 id="final-kernel">Final kernel</h2>
 
@@ -1524,6 +1567,13 @@ compute units.</p>
 
 <p>Then, shared-memory values were used only once per thread. We added register
 micro-tiles.</p>
+
+<p>Another way to read the whole chapter is:</p>
+
+<div class="language-text highlighter-rouge"><div class="highlight"><pre class="highlight"><code>coalescing:       make neighboring threads request neighboring memory
+shared tiling:    make one global load serve many threads
+register tiling:  make one shared-memory load serve many outputs in one thread
+</code></pre></div></div>
 
 <p>I am deliberately not putting performance numbers in this table yet. A number
 without a GPU model, matrix shape, CUDA version, warm-up, and timing method is
